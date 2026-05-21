@@ -1,20 +1,34 @@
 name: Run Rutracker Bot
+
 on:
   push:
     branches: [ main, master ]
+  schedule:
+    - cron: '0 * * * *' # Автоматический перезапуск бота каждый час (24/7)
   workflow_dispatch:
+
 jobs:
   run-bot:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
-    - uses: actions/setup-python@v4
+    - name: Checkout code
+      uses: actions/checkout@v4 # Обновлено до v4 (Node 24)
+      with:
+        fetch-depth: 1
+
+    - name: Set up Python
+      uses: actions/setup-python@v5 # Обновлено до v5 (Node 24)
       with:
         python-version: '3.11'
-    - run: pip install -r requirements.txt
-    - name: Run Bot
+
+    - name: Install dependencies
+      run: pip install -r requirements.txt
+
+    - name: Run Bot with Timeout
       env:
         TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
         RUTRACKER_LOGIN: ${{ secrets.RUTRACKER_LOGIN }}
         RUTRACKER_PASSWORD: ${{ secrets.RUTRACKER_PASSWORD }}
-      run: python bot.py
+      # timeout ограничивает сессию 50 минутами, чтобы гитхаб не выдавал ошибку,
+      # а через час cron запустит бота заново.
+      run: timeout 3000 python bot.py || true
