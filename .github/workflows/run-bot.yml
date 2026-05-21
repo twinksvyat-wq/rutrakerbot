@@ -1,0 +1,20 @@
+name: Run Rutracker Bot
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    - run: pip install -r requirements.txt
+    - name: Run Bot
+      env:
+        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+        RUTRACKER_LOGIN: ${{ secrets.RUTRACKER_LOGIN }}
+        RUTRACKER_PASSWORD: ${{ secrets.RUTRACKER_PASSWORD }}
+      run: python bot.py
