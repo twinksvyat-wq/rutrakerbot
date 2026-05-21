@@ -31,4 +31,4 @@ jobs:
         RUTRACKER_PASSWORD: ${{ secrets.RUTRACKER_PASSWORD }}
       # timeout ограничивает сессию 50 минутами, чтобы гитхаб не выдавал ошибку,
       # а через час cron запустит бота заново.
-      run: timeout 3000 python bot.py || true
+      run: timeout 3000 python -u bot.py || true
