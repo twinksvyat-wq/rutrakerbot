@@ -4,20 +4,20 @@ on:
   push:
     branches: [ main, master ]
   schedule:
-    - cron: '0 * * * *' # Автоматический перезапуск бота каждый час (24/7)
-  workflow_dispatch:
+    - cron: '*/30 * * * *' # Запуск проверки каждые 30 минут для стабильности 24/7
+  workflow_dispatch: # Позволяет запускать бота вручную кнопкой Run workflow
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4 # Обновлено до v4 (Node 24)
+      uses: actions/checkout@v4
       with:
-        fetch-depth: 1
+        fetch-depth: 1 # Скачивает только последний коммит (защита от зависания checkout)
 
     - name: Set up Python
-      uses: actions/setup-python@v5 # Обновлено до v5 (Node 24)
+      uses: actions/setup-python@v5
       with:
         python-version: '3.11'
 
@@ -29,6 +29,6 @@ jobs:
         TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
         RUTRACKER_LOGIN: ${{ secrets.RUTRACKER_LOGIN }}
         RUTRACKER_PASSWORD: ${{ secrets.RUTRACKER_PASSWORD }}
-      # timeout ограничивает сессию 50 минутами, чтобы гитхаб не выдавал ошибку,
-      # а через час cron запустит бота заново.
+      # timeout 3000 держит бота включенным 50 минут, после чего мягко завершает процесс.
+      # Новая задача на запуск подхватит его по расписанию.
       run: timeout 3000 python -u bot.py || true
