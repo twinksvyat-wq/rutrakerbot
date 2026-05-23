@@ -6,113 +6,245 @@
     <title>Rutracker Mini App</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
-        /* Минималистичный глубокий черный дизайн */
         body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             background-color: #000000;
             color: #ffffff;
             margin: 0;
             padding: 16px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-        }
-
-        .container {
-            width: 100%;
-            max-width: 400px;
-        }
-
-        /* Поле ввода */
-        input {
-            width: 100%;
-            padding: 12px;
-            background-color: #121212;
-            border: 1px solid #222222;
-            border-radius: 8px;
-            color: #ffffff;
-            font-size: 16px;
             box-sizing: border-box;
-            margin-bottom: 12px;
-            outline: none;
-            transition: border-color 0.2s;
         }
-        input:focus {
-            border-color: #444444;
+        .container { width: 100%; max-width: 450px; margin: 0 auto; }
+        
+        /* Элементы ввода */
+        .search-box { display: flex; gap: 8px; margin-bottom: 16px; }
+        input {
+            flex: 1; padding: 12px; background-color: #0a0a0a;
+            border: 1px solid #1a1a1a; border-radius: 8px; color: #ffffff;
+            font-size: 15px; outline: none;
         }
-
-        /* Кнопки */
+        input:focus { border-color: #333333; }
         button {
-            width: 100%;
-            padding: 12px;
-            background-color: #ffffff;
-            color: #000000;
-            border: none;
-            border-radius: 8px;
-            font-size: 16px;
-            font-weight: 500;
-            cursor: pointer;
-            margin-bottom: 20px;
-            transition: opacity 0.2s;
+            padding: 12px 20px; background-color: #ffffff; color: #000000;
+            border: none; border-radius: 8px; font-weight: 600; font-size: 14px; cursor: pointer;
         }
-        button:active {
-            opacity: 0.8;
-        }
-
-        /* Список категорий */
-        .categories {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-        }
-
+        button:active { opacity: 0.8; }
+        
+        /* Сетки и списки */
+        .categories { display: grid; grid-cols: 2; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-bottom: 20px; }
         .cat-btn {
-            background-color: #121212;
-            color: #ffffff;
-            border: 1px solid #222222;
-            text-align: left;
-            padding: 14px;
-            margin-bottom: 0;
-            border-radius: 8px;
+            background-color: #0a0a0a; color: #ffffff; border: 1px solid #1a1a1a;
+            padding: 12px; border-radius: 8px; font-size: 13px; font-weight: 500; text-align: center;
         }
-        .cat-btn:active {
-            background-color: #1a1a1a;
+        .cat-btn:active { background-color: #151515; }
+        
+        .section-title { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #444444; margin: 15px 0 8px 0; font-weight: 700; }
+        
+        /* Карточки раздач */
+        .results-list, .history-list { display: flex; flex-direction: column; gap: 8px; }
+        .torrent-card {
+            background-color: #0a0a0a; border: 1px solid #1a1a1a; border-radius: 8px;
+            padding: 12px; display: flex; justify-content: space-between; align-items: center; cursor: pointer;
         }
+        .torrent-card:active { background-color: #151515; }
+        .torrent-title { font-size: 13px; font-weight: 500; line-height: 1.4; color: #dddddd; padding-right: 10px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+        .torrent-size { font-size: 11px; font-weight: 700; color: #888888; background-color: #111111; padding: 4px 8px; border-radius: 4px; border: 1px solid #222222; white-space: nowrap; }
+        
+        /* Пагинация */
+        .pagination { display: flex; gap: 8px; margin-top: 12px; }
+        .nav-btn { background-color: #0a0a0a; color: #ffffff; border: 1px solid #1a1a1a; flex: 1; padding: 10px; font-size: 13px; }
+        .nav-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+        
+        /* Окно деталей */
+        .hidden { display: none !important; }
+        .back-btn { background-color: transparent; color: #888888; border: 1px solid #222222; padding: 8px 12px; font-size: 12px; margin-bottom: 16px; width: auto; display: inline-block; }
+        .details-box { background-color: #0a0a0a; border: 1px solid #1a1a1a; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+        .details-title { font-size: 16px; font-weight: 600; margin-bottom: 12px; line-height: 1.4; }
+        .details-meta { font-size: 13px; color: #888888; display: flex; justify-content: space-between; border-top: 1px solid #1a1a1a; pt: 12px; padding-top: 12px; }
+        .download-btn { background-color: #ffffff; color: #000000; width: 100%; padding: 14px; font-size: 15px; font-weight: 700; text-align: center; }
+        
+        .loader { text-align: center; padding: 20px; color: #555555; font-size: 13px; }
     </style>
 </head>
 <body>
 
-    <div class="container">
-        <input type="text" id="search-input" placeholder="Поиск по релизам...">
-        <button id="search-btn">Найти</button>
+    <div class="container" id="app-main">
+        <div class="search-box">
+            <input type="text" id="search-input" placeholder="Поиск раздач...">
+            <button onclick="performSearch()">Найти</button>
+        </div>
 
         <div class="categories">
-            <button class="cat-btn" onclick="selectCategory('🎬 Кино')">🎬 Кино</button>
-            <button class="cat-btn" onclick="selectCategory('📺 Сериалы')">📺 Сериалы</button>
-            <button class="cat-btn" onclick="selectCategory('🎮 Игры')">🎮 Игры</button>
-            <button class="cat-btn" onclick="selectCategory('📚 Книги')">📚 Книги</button>
-            <button class="cat-btn" onclick="selectCategory('🎵 Музыка')">🎵 Музыка</button>
+            <div class="cat-btn" onclick="performCat('7')">🎬 Кино</div>
+            <div class="cat-btn" onclick="performCat('189')">📺 Сериалы</div>
+            <div class="cat-btn" onclick="performCat('9')">🎮 Игры</div>
+            <div class="cat-btn" onclick="performCat('10')">📚 Книги</div>
         </div>
+
+        <div id="results-wrapper" class="hidden">
+            <div class="section-title" id="results-count">Результаты поиска</div>
+            <div class="results-list" id="results-list"></div>
+            <div class="pagination">
+                <button class="nav-btn" id="btn-prev" onclick="changePage(-1)">⬅️ Назад</button>
+                <button class="nav-btn" id="btn-next" onclick="changePage(1)">Вперед ➡️</button>
+            </div>
+        </div>
+
+        <div class="section-title">История просмотров</div>
+        <div class="history-list" id="history-list"></div>
+    </div>
+
+    <div class="container hidden" id="app-details">
+        <button class="back-btn" onclick="showMainScreen()">⬅️ Назад к списку</button>
+        <div class="details-box">
+            <div class="details-title" id="det-title">Название раздачи</div>
+            <div class="details-meta">
+                <span>Размер:</span>
+                <span id="det-size" style="color: #fff; font-weight: bold;">0 GB</span>
+            </div>
+        </div>
+        <button class="download-btn" id="det-download-btn">Скачать Torrent в чат</button>
     </div>
 
     <script>
         const tg = window.Telegram.WebApp;
         tg.ready();
-        tg.expand(); // Разворачиваем приложение на максимум
+        tg.expand();
 
-        // Функция поиска
-        document.getElementById('search-btn').addEventListener('click', () => {
+        // Укажи здесь URL твоего бота (который мы развернем в Части 2)
+        const API_URL = ""; 
+
+        let currentResults = [];
+        let currentPage = 0;
+        const itemsPerPage = 5;
+
+        // Поиск по тексту
+        function performSearch() {
             const query = document.getElementById('search-input').value.trim();
-            if (query) {
-                // Вместо sendData используем switchInlineQuery, чтобы передать запрос боту без закрытия приложения
-                tg.switchInlineQuery(query, ["users", "chats", "groups"]);
-            }
-        });
-
-        // Функция выбора категории
-        function selectCategory(categoryName) {
-            tg.switchInlineQuery(categoryName, ["users", "chats", "groups"]);
+            if(!query) return;
+            fetchResults({ nm: query });
         }
+
+        // Поиск по категории
+        function performCat(fid) {
+            fetchResults({ f: fid });
+        }
+
+        function fetchResults(params) {
+            const resWrapper = document.getElementById('results-wrapper');
+            const resList = document.getElementById('results-list');
+            resWrapper.classList.remove('hidden');
+            resList.innerHTML = '<div class="loader">Загрузка данных с Рутрекера...</div>';
+            
+            // Запрашиваем данные напрямую у нашего запущенного Python-сервера бота
+            let url = new URL(`${API_URL}/api/search`);
+            Object.keys(params).forEach(key => url.searchParams.append(key, params[key]));
+
+            fetch(url)
+                .then(res => res.json())
+                .then(data => {
+                    currentResults = data;
+                    currentPage = 0;
+                    renderResultsHTML();
+                })
+                .catch(err => {
+                    resList.innerHTML = '<div class="loader" style="color: #ff3333;">Ошибка подключения к серверу бота.</div>';
+                });
+        }
+
+        function renderResultsHTML() {
+            const resList = document.getElementById('results-list');
+            resList.innerHTML = '';
+            
+            if(currentResults.length === 0) {
+                resList.innerHTML = '<div class="loader">Ничего не найдено.</div>';
+                return;
+            }
+
+            const start = currentPage * itemsPerPage;
+            const end = start + itemsPerPage;
+            const chunk = currentResults.slice(start, end);
+
+            chunk.forEach(item => {
+                const div = document.createElement('div');
+                div.className = 'torrent-card';
+                div.onclick = () => openDetails(item);
+                div.innerHTML = `
+                    <div class="torrent-title">${item.title}</div>
+                    <div class="torrent-size">${item.size}</div>
+                `;
+                resList.appendChild(div);
+            });
+
+            document.getElementById('results-count').innerText = `Результаты (${start+1}-${Math.min(end, currentResults.length)} из ${currentResults.length})`;
+            document.getElementById('btn-prev').disabled = currentPage === 0;
+            document.getElementById('btn-next').disabled = end >= currentResults.length;
+        }
+
+        function changePage(dir) {
+            currentPage += dir;
+            renderResultsHTML();
+        }
+
+        // Работа с окном подробностей раздачи
+        function openDetails(item) {
+            document.getElementById('app-main').classList.add('hidden');
+            document.getElementById('app-details').classList.remove('hidden');
+            
+            document.getElementById('det-title').innerText = item.title;
+            document.getElementById('det-size').innerText = item.size;
+            
+            // Кнопка скачать отправляет команду боту и закрывает приложение
+            document.getElementById('det-download-btn').onclick = () => {
+                tg.sendData(`download:${item.tid}`);
+                tg.close();
+            };
+
+            saveToHistory(item);
+        }
+
+        function showMainScreen() {
+            document.getElementById('app-details').classList.add('hidden');
+            document.getElementById('app-main').classList.remove('hidden');
+            renderHistoryHTML();
+        }
+
+        // Управление историей через LocalStorage телефона
+        function saveToHistory(item) {
+            let history = JSON.parse(localStorage.getItem('rt_history') || '[]');
+            history = history.filter(h => h.tid !== item.tid); // Удаляем дубликат
+            history.unshift(item); // Добавляем в начало
+            if(history.length > 5) history.pop(); // Храним только последние 5
+            localStorage.setItem('rt_history', JSON.stringify(history));
+        }
+
+        function renderHistoryHTML() {
+            const histList = document.getElementById('history-list');
+            histList.innerHTML = '';
+            let history = JSON.parse(localStorage.getItem('rt_history') || '[]');
+            
+            if(history.length === 0) {
+                histList.innerHTML = '<div class="loader" style="padding: 10px 0;">История пуста</div>';
+                return;
+            }
+
+            history.forEach(item => {
+                const div = document.createElement('div');
+                div.className = 'torrent-card';
+                div.style.borderColor = '#111111';
+                div.onclick = () => openDetails(item);
+                div.innerHTML = `
+                    <div class="torrent-title" style="color: #888;">${item.title}</div>
+                    <div class="torrent-size">${item.size}</div>
+                `;
+                histList.appendChild(div);
+            });
+        }
+
+        // Первичный рендеринг истории при запуске
+        window.addEventListener('DOMContentLoaded', () => {
+            renderHistoryHTML();
+        });
     </script>
 </body>
 </html>
