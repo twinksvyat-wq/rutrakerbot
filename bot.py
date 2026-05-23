@@ -16,7 +16,7 @@ r_session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x6
 DOMAINS = ["https://rutracker.net", "https://rutracker.org", "https://rutracker.nl"]
 BASE_URL = DOMAINS[0]
 
-CAT_MAP = {"🎬 Кино": "7", "📺 Сериалы": "189", "🎮 Игры": "9", "📚 Книги": "10", "🎵 Музыка": "404"}
+CAT_MAP = {"🎬 Кино": "7", "📺 Сериалы": "189", "🎮 Игры": "9", "📚 Книги": "10"}
 user_data = {}
 
 # --- СТАТИСТИКА ---
@@ -57,7 +57,7 @@ def parse_rutracker(params, chat_id=None):
         for row in soup.find_all('tr'):
             links = [l for l in row.find_all('a', href=True) if "viewtopic.php?t=" in l['href']]
             if not links: continue
-            title = links[0].get_text(strip=True)[:60]
+            title = links[0].get_text(strip=True)[:65]
             tid = links[0]['href'].split('t=')[-1]
             size = "---"
             for td in row.find_all('td'):
@@ -85,7 +85,6 @@ def show_chunk(chat_id):
         kb = types.InlineKeyboardMarkup()
         kb.add(types.InlineKeyboardButton("📥 Скачать торрент", callback_data=f"d{item['tid']}"))
         try:
-            # Экранируем спецсимволы в названии раздач во избежание конфликтов HTML
             safe_title = html.escape(item['title'])
             m = bot.send_message(chat_id, f"📦 <b>{safe_title}</b>\n⚖️ Вес: <code>{item['size']}</code>", reply_markup=kb, parse_mode="HTML")
             new_msg_ids.append(m.message_id)
@@ -103,7 +102,6 @@ def show_chunk(chat_id):
     user_data[chat_id]['msg_ids'] = new_msg_ids
 
 def get_kb():
-    # Полностью пересобираем клавиатуру (без кнопки статистика)
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row('🔍 Поиск', '🏠 Меню', '📂 Каталог')
     kb.row(types.KeyboardButton("📱 Открыть Mini App", web_app=types.WebAppInfo(url=MINI_APP_URL)))
@@ -125,15 +123,14 @@ def start_cmd(m):
     clear_old_messages(m.chat.id)
     total_users.add(m.chat.id)
     
-    # Безопасный HTML чейнджлог, который никогда не упадет
     welcome_text = (
         "👋 <b>Бот Rutracker активен!</b>\n"
         "Создатель: @neeb_devv\n\n"
         "🛠 <b>Changelog:</b>\n"
-        "• <code>v1.3</code> — Кнопка статистики убрана в скрытую команду /stats.\n"
-        "• <code>v1.2</code> — Обычный поиск переведен на выдачу строго по 5 позиций.\n"
-        "• <code>v1.1</code> — Проведены тех. работы с сервером (авто-обход блокировок).\n"
-        "• <code>v1.0</code> — Релиз бота + запуск встроенного Mini App.\n\n"
+        "• <code>v1.3</code> — Кнопка статистики убрана в команду /stats.\n"
+        "• <code>v1.2</code> — Поиск изменен на строгую выдачу по 5 позиций.\n"
+        "• <code>v1.1</code> — Проведены тех. работы с сервером обновлений.\n"
+        "• <code>v1.0</code> — Релиз бота + запуск AMOLED Mini App.\n\n"
         "Используй меню ниже для поиска или запуска приложения!"
     )
     bot.send_message(m.chat.id, welcome_text, reply_markup=get_kb(), parse_mode="HTML")
@@ -194,6 +191,35 @@ def callbacks(c):
             bot.send_document(cid, f, caption="Файл готов ✅")
         except: 
             bot.send_message(cid, "❌ Ошибка при загрузке торрента.")
+
+# --- ИНЛАЙН ОБРАБОТЧИК ДЛЯ ПОИСКА ВНУТРИ MINI APP ---
+@bot.inline_handler(func=lambda query: True)
+def query_text(inline_query):
+    try:
+        text = inline_query.query
+        if not text: return
+        
+        if text in ["🎬 Кино", "📺 Сериалы", "🎮 Игры", "📚 Книги"]:
+            cat_ids = {"🎬 Кино": "7", "📺 Сериалы": "189", "🎮 Игры": "9", "📚 Книги": "10"}
+            results = parse_rutracker({'f': cat_ids[text]})
+        else:
+            results = parse_rutracker({'nm': text})
+            
+        inline_results = []
+        for i, item in enumerate(results[:15]):
+            input_content = types.InputTextMessageContent(f"📥 Торрент выбран:\n<b>{html.escape(item['title'])}</b>", parse_mode="HTML")
+            r = types.InlineQueryResultArticle(
+                id=str(i),
+                title=item['title'],
+                description=f"⚖️ Вес: {item['size']}",
+                input_message_content=input_content,
+                reply_markup=types.InlineKeyboardMarkup().add(
+                    types.InlineKeyboardButton("📥 Получить .torrent файл", callback_data=f"d{item['tid']}")
+                )
+            )
+            inline_results.append(r)
+        bot.answer_inline_query(inline_query.id, inline_results, cache_time=1)
+    except: pass
 
 if __name__ == '__main__':
     if login():
