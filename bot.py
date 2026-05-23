@@ -1,4 +1,4 @@
-import os, telebot, requests, io, time
+import os, telebot, requests, io, time, html
 from bs4 import BeautifulSoup
 from telebot import types
 
@@ -85,7 +85,9 @@ def show_chunk(chat_id):
         kb = types.InlineKeyboardMarkup()
         kb.add(types.InlineKeyboardButton("📥 Скачать торрент", callback_data=f"d{item['tid']}"))
         try:
-            m = bot.send_message(chat_id, f"📦 **{item['title']}**\n⚖️ Вес: `{item['size']}`", reply_markup=kb, parse_mode="Markdown")
+            # Экранируем спецсимволы в названии раздач во избежание конфликтов HTML
+            safe_title = html.escape(item['title'])
+            m = bot.send_message(chat_id, f"📦 <b>{safe_title}</b>\n⚖️ Вес: <code>{item['size']}</code>", reply_markup=kb, parse_mode="HTML")
             new_msg_ids.append(m.message_id)
             time.sleep(0.2)
         except: pass
@@ -101,6 +103,7 @@ def show_chunk(chat_id):
     user_data[chat_id]['msg_ids'] = new_msg_ids
 
 def get_kb():
+    # Полностью пересобираем клавиатуру (без кнопки статистика)
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row('🔍 Поиск', '🏠 Меню', '📂 Каталог')
     kb.row(types.KeyboardButton("📱 Открыть Mini App", web_app=types.WebAppInfo(url=MINI_APP_URL)))
@@ -109,12 +112,12 @@ def get_kb():
 @bot.message_handler(commands=['stats'])
 def show_stat(m):
     text = (
-        "📊 **Системная статистика:**\n\n"
-        f"👥 Уникальных юзеров за сессию: `{len(total_users)}`\n"
-        f"🔍 Всего запросов поиска: `{total_requests_count}`\n"
-        f"🌐 Рабочий домен: `{BASE_URL.replace('https://', '')}`"
+        "📊 <b>Системная статистика:</b>\n\n"
+        f"👥 Уникальных юзеров за сессию: <code>{len(total_users)}</code>\n"
+        f"🔍 Всего запросов поиска: <code>{total_requests_count}</code>\n"
+        f"🌐 Рабочий домен: <code>{BASE_URL.replace('https://', '')}</code>"
     )
-    bot.send_message(m.chat.id, text, parse_mode="Markdown")
+    bot.send_message(m.chat.id, text, parse_mode="HTML")
 
 @bot.message_handler(commands=['start'])
 @bot.message_handler(func=lambda m: m.text == '🏠 Меню')
@@ -122,17 +125,18 @@ def start_cmd(m):
     clear_old_messages(m.chat.id)
     total_users.add(m.chat.id)
     
+    # Безопасный HTML чейнджлог, который никогда не упадет
     welcome_text = (
-        "👋 **Бот Rutracker активен!**\n"
+        "👋 <b>Бот Rutracker активен!</b>\n"
         "Создатель: @neeb_devv\n\n"
-        "🛠 **Changelog:**\n"
-        "• `v1.3` — Кнопка статистики убрана в скрытую команду `/stats`.\n"
-        "• `v1.2` — Обычный поиск переведен на выдачу строго по 5 позиций.\n"
-        "• `v1.1` — Проведены тех. работы с сервером (авто-обход блокировок).\n"
-        "• `v1.0` — Релиз бота + запуск встроенного Mini App.\n\n"
+        "🛠 <b>Changelog:</b>\n"
+        "• <code>v1.3</code> — Кнопка статистики убрана в скрытую команду /stats.\n"
+        "• <code>v1.2</code> — Обычный поиск переведен на выдачу строго по 5 позиций.\n"
+        "• <code>v1.1</code> — Проведены тех. работы с сервером (авто-обход блокировок).\n"
+        "• <code>v1.0</code> — Релиз бота + запуск встроенного Mini App.\n\n"
         "Используй меню ниже для поиска или запуска приложения!"
     )
-    bot.send_message(m.chat.id, welcome_text, reply_markup=get_kb(), parse_mode="Markdown")
+    bot.send_message(m.chat.id, welcome_text, reply_markup=get_kb(), parse_mode="HTML")
 
 @bot.message_handler(func=lambda m: m.text == '🔍 Поиск')
 def ask_search(m): 
