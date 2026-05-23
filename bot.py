@@ -11,12 +11,16 @@ if not all([TOKEN, R_LOGIN, R_PASSWORD]):
 
 bot = telebot.TeleBot(TOKEN)
 r_session = requests.Session()
-r_session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
+r_session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'})
 
-# Используем официальное зеркало, так как основной домен часто блокирует облачные IP
-BASE_URL = "https://rutracker.net" 
+# Список всех зеркал Рутрекера для автоматического обхода блокировок сервера
+DOMAINS = ["https://rutracker.net", "https://rutracker.org", "https://rutracker.nl"]
+BASE_URL = DOMAINS[0] # По умолчанию берем первое
+
 CAT_MAP = {"🎬 Кино": "7", "📺 Сериалы": "189", "🎮 Игры": "9", "📚 Книги": "10", "🎵 Музыка": "404"}
 user_data = {}
+total_users = set()
+total_requests_count = 0
 
 def clear_old_messages(chat_id):
     if chat_id in user_data and 'msg_ids' in user_data[chat_id]:
@@ -26,31 +30,36 @@ def clear_old_messages(chat_id):
         user_data[chat_id]['msg_ids'] = []
 
 def login():
+    global BASE_URL
     print("--- 🔐 ПОПЫТКА ВХОДА ---")
-    try:
-        data = {'login_username': R_LOGIN, 'login_password': R_PASSWORD, 'login': 'Вход'}
-        res = r_session.post(f"{BASE_URL}/forum/login.php", data=data, timeout=20)
-        if "login_username" not in res.text:
-            print("✅ АВТОРИЗАЦИЯ: УСПЕХ")
-            return True
-        print("❌ АВТОРИЗАЦИЯ: ОТКАЗ (Неверные данные или капча)")
-        return False
-    except Exception as e:
-        print(f"❌ ОШИБКА ВХОДА: {e}")
-        return False
+    
+    # Перебираем зеркала, пока одно из них не сработает успешно
+    for domain in DOMAINS:
+        print(f"Пробуем авторизоваться через: {domain}")
+        try:
+            data = {'login_username': R_LOGIN, 'login_password': R_PASSWORD, 'login': 'Вход'}
+            res = r_session.post(f"{domain}/forum/login.php", data=data, timeout=15)
+            
+            if "login_username" not in res.text and res.status_code == 200:
+                print(f"✅ УСПЕХ: Авторизация пройдена через {domain}")
+                BASE_URL = domain # Запоминаем рабочее зеркало
+                return True
+            print(f"⚠️ Отказ или капча на {domain}")
+        except Exception as e:
+            print(f"⚠️ Ошибка связи с {domain}: {e}")
+            
+    return False
 
 def parse_rutracker(params, chat_id):
     try:
-        resp = r_session.get(f"{BASE_URL}/forum/tracker.php", params=params, timeout=30)
-        
-        if "ddos" in resp.text.lower() or "cloudflare" in resp.text.lower() or resp.status_code == 403:
-            bot.send_message(chat_id, "⚠️ Рутрекер заблокировал запрос (Защита Cloudflare). Попробуй позже.")
+        resp = r_session.get(f"{BASE_URL}/forum/tracker.php", params=params, timeout=25)
+        if "ddos" in resp.text.lower() or "cloudflare" in resp.text.lower() or resp.status_code in [403, 503]:
+            bot.send_message(chat_id, "⚠️ Сервер Рутрекера временно ограничил доступ. Попробуй другой запрос или зайди позже.")
             return []
             
         resp.encoding = 'windows-1251'
         soup = BeautifulSoup(resp.text, 'html.parser')
         results = []
-        
         for row in soup.find_all('tr'):
             links = [l for l in row.find_all('a', href=True) if "viewtopic.php?t=" in l['href']]
             if not links: continue
@@ -61,14 +70,12 @@ def parse_rutracker(params, chat_id):
                 if any(u in td.get_text().upper() for u in ['GB', 'MB', 'ГБ', 'МБ']):
                     size = td.get_text(strip=True).split('↓')[0].strip(); break
             results.append({'title': title, 'tid': tid, 'size': size})
-            
         unique = []
         seen = set()
         for r in results:
             if r['tid'] not in seen: unique.append(r); seen.add(r['tid'])
         return unique
-    except Exception as e:
-        bot.send_message(chat_id, f"❌ Ошибка сети: {str(e)[:50]}")
+    except:
         return []
 
 def show_chunk(chat_id):
@@ -99,12 +106,26 @@ def show_chunk(chat_id):
 def get_kb():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row('🔍 Поиск', '🏠 Меню', '📂 Каталог')
+    kb.row('📊 Статистика')
     return kb
+
+@bot.message_handler(commands=['stat'])
+@bot.message_handler(func=lambda m: m.text == '📊 Статистика')
+def show_stat(m):
+    text = (
+        "📊 **Статистика за текущую сессию:**\n\n"
+        f"👥 Уникальных пользователей: `{len(total_users)}`\n"
+        f"🔍 Всего поисковых запросов: `{total_requests_count}`\n\n"
+        f"🌐 Активное зеркало: `{BASE_URL.replace('https://', '')}`\n\n"
+        "⚡ _Статистика сбрасывается при плановом перезапуске контейнера на GitHub._"
+    )
+    bot.send_message(m.chat.id, text, parse_mode="Markdown")
 
 @bot.message_handler(commands=['start'])
 @bot.message_handler(func=lambda m: m.text == '🏠 Меню')
 def start_cmd(m):
     clear_old_messages(m.chat.id)
+    total_users.add(m.chat.id)
     bot.send_message(m.chat.id, "👋 Бот активен!\nСоздатель: @neeb_devv", reply_markup=get_kb())
 
 @bot.message_handler(func=lambda m: m.text == '🔍 Поиск')
@@ -116,8 +137,12 @@ def show_cat(m):
     for name, fid in CAT_MAP.items(): kb.add(types.InlineKeyboardButton(name, callback_data=f"c{fid}"))
     bot.send_message(m.chat.id, "Выберите категорию:", reply_markup=kb)
 
-@bot.message_handler(func=lambda m: m.text not in ['🔍 Поиск', '📂 Каталог', '🏠 Меню', '/start'])
+@bot.message_handler(func=lambda m: m.text not in ['🔍 Поиск', '📂 Каталог', '🏠 Меню', '/start', '📊 Статистика'])
 def handle_text(m):
+    global total_requests_count
+    total_requests_count += 1
+    total_users.add(m.chat.id)
+    
     status_msg = bot.send_message(m.chat.id, f"🔍 Ищу «{m.text}»...")
     results = parse_rutracker({'nm': m.text}, m.chat.id)
     try: bot.delete_message(m.chat.id, status_msg.message_id)
@@ -127,8 +152,7 @@ def handle_text(m):
         user_data[m.chat.id]['res'] = results
         user_data[m.chat.id]['idx'] = 0
         show_chunk(m.chat.id)
-    else: 
-        bot.send_message(m.chat.id, "❌ Ничего не найдено.")
+    else: bot.send_message(m.chat.id, "❌ Ничего не найдено.")
 
 @bot.callback_query_handler(func=lambda c: True)
 def callbacks(c):
@@ -150,7 +174,7 @@ def callbacks(c):
 
 if __name__ == '__main__':
     if login():
-        print("🚀 БОТ ЗАПУЩЕН!")
+        print("🚀 БОТ УСПЕШНО ЗАПУЩЕН!")
         bot.polling(none_stop=True)
     else:
-        print("❌ КРИТИЧЕСКАЯ ОШИБКА АВТОРИЗАЦИИ!")
+        print("❌ КРИТИЧЕСКАЯ ОШИБКА: Ни одно из зеркал Рутрекера не ответило!")
