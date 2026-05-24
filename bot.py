@@ -1,7 +1,7 @@
-import os, telebot, requests, io, time, html
+import os, telebot, requests, io, time, html, re
 from bs4 import BeautifulSoup
 from telebot import types
-import google.generativeai as genai
+from google import genai
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 R_LOGIN = os.environ.get("RUTRACKER_LOGIN")
@@ -11,11 +11,11 @@ GEMINI_KEY = os.environ.get("GEMINI_KEY")
 if not all([TOKEN, R_LOGIN, R_PASSWORD]):
     print("❌ ОШИБКА: Не настроены секреты GitHub!"); exit(1)
 
+# Инициализация нового актуального клиента Google GenAI
 if GEMINI_KEY:
-    genai.configure(api_key=GEMINI_KEY)
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    ai_client = genai.Client(api_key=GEMINI_KEY)
 else:
-    model = None
+    ai_client = None
 
 bot = telebot.TeleBot(TOKEN)
 r_session = requests.Session()
@@ -25,6 +25,9 @@ DOMAINS = ["https://rutracker.net", "https://rutracker.org", "https://rutracker.
 BASE_URL = DOMAINS[0]
 
 CAT_MAP = {"🎬 Кино": "7", "📺 Сериалы": "189", "🎮 Игры": "9", "📚 Книги": "10"}
+
+# Твой ник для вечного безлимита
+MODERATORS = ["Ki_l1"]
 
 user_data = {}
 total_users = set()
@@ -44,6 +47,16 @@ def login():
                 BASE_URL = domain; return True
         except: pass
     return False
+
+def clean_html(text):
+    if not text: return ""
+    text = re.sub(r'<[^>]+>', '', text)
+    return html.escape(text)
+
+def check_moderator(user_obj):
+    if not user_obj: return False
+    username = getattr(user_obj, 'username', None)
+    return username and username.lower() in [m.lower() for m in MODERATORS]
 
 def parse_rutracker(params, chat_id=None):
     try:
@@ -69,14 +82,12 @@ def parse_rutracker(params, chat_id=None):
         return unique
     except: return []
 
-# Парсинг описания, картинки и комментов за один проход
 def parse_topic_details(tid):
     try:
         resp = r_session.get(f"{BASE_URL}/forum/viewtopic.php?t={tid}", timeout=15)
         resp.encoding = 'windows-1251'
         soup = BeautifulSoup(resp.text, 'html.parser')
         
-        # 1. Ищем картинку (первое изображение в посте)
         img_url = None
         main_post = soup.find('span', class_='postbody')
         if main_post:
@@ -84,7 +95,6 @@ def parse_topic_details(tid):
             if img_tag and img_tag.get('title'):
                 img_url = img_tag['title']
         
-        # 2. Описание раздачи (берём первые пару абзацев текстового блока)
         description = "Описание релиза недоступно."
         if main_post:
             lines = [line.strip() for line in main_post.get_text().split('\n') if line.strip()]
@@ -92,9 +102,8 @@ def parse_topic_details(tid):
             if valid_lines:
                 description = "\n".join(valid_lines[:3])[:350] + "..."
 
-        # 3. Собираем комменты
         comments = []
-        for post in soup.find_all('span', class_='postbody')[1:]: # Пропускаем сам релиз
+        for post in soup.find_all('span', class_='postbody')[1:]: 
             text = post.get_text(strip=True)
             if text and len(text) > 10: comments.append(text[:200])
             if len(comments) >= 20: break
@@ -104,16 +113,20 @@ def parse_topic_details(tid):
         return None, "Не удалось загрузить данные топика.", []
 
 def get_ai_summary(comments):
-    if not model or not comments:
-        return "Отзывы к релизу отсутствуют или ИИ сейчас занят."
+    if not ai_client or not comments:
+        return "Отзывы к релизу отсутствуют или в ветке пока нет обсуждений."
     raw_text = "\n--- Отзыв ---\n".join(comments)
     prompt = (
-        "Ты — ассистент торрент-бота. Проанализируй комментарии пользователей к раздаче. "
-        "Выдай краткий вердикт (строго до 2 предложений). Напиши, стабилен ли релиз, "
+        "Ты — технический ассистент торрент-бота. Проанализируй комментарии пользователей к раздаче. "
+        "Выдай краткий жесткий вердикт (строго до 2 предложений). Напиши, стабилен ли релиз, "
         "нет ли проблем со звуком, багов или проблем на Windows 11. Пиши без приветствий, сразу суть."
     )
     try:
-        response = model.generate_content(prompt + "\n\nВот комментарии:\n" + raw_text)
+        # Использование нового метода генерации контента для google-genai SDK
+        response = ai_client.models.generate_content(
+            model='gemini-1.5-flash',
+            contents=prompt + "\n\nВот комментарии:\n" + raw_text
+        )
         return response.text.strip()
     except: return "Не удалось сгенерировать вердикт ИИ."
 
@@ -133,10 +146,11 @@ def show_chunk(chat_id):
     for item in res_to_show:
         kb = types.InlineKeyboardMarkup()
         kb.add(types.InlineKeyboardButton("📄 Открыть карточку релиза", callback_data=f"v{item['tid']}"))
-        safe_title = html.escape(item['title'])
-        text = f"▪ *{safe_title}*\n└ 💼 Вес: `{item['size']}`"
+        safe_title = clean_html(item['title'])
+        safe_size = clean_html(item['size'])
+        text = f"▪️ <b>{safe_title}</b>\n└ 💼 Вес: <code>{safe_size}</code>"
         try:
-            m = bot.send_message(chat_id, text, reply_markup=kb, parse_mode="Markdown")
+            m = bot.send_message(chat_id, text, reply_markup=kb, parse_mode="HTML")
             new_msg_ids.append(m.message_id)
             time.sleep(0.1)
         except: pass
@@ -148,19 +162,20 @@ def show_chunk(chat_id):
     if idx + 5 < len(state['res']): btns.append(types.InlineKeyboardButton("Вперед ➡️", callback_data="s_n"))
     nav.add(*btns)
     
-    m_nav = bot.send_message(chat_id, "*Навигация по страницам:*", reply_markup=nav, parse_mode="Markdown")
+    m_nav = bot.send_message(chat_id, "<b>Навигация по страницам:</b>", reply_markup=nav, parse_mode="HTML")
     new_msg_ids.append(m_nav.message_id)
     user_data[chat_id]['msg_ids'] = new_msg_ids
 
 def get_main_keyboard():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.row('🔍 Поиск релизов', '📂 Каталог тем')
-    kb.row('👥 Рефералы и Лимиты', '⭐ Безлимитный доступ')
-    kb.row('🏠 Главное меню')
+    kb.row('🟢 Поиск релизов', '🟢 Каталог тем')
+    kb.row('🔵 Рефералы и Лимиты', '🔵 Безлимитный доступ')
+    kb.row('🔴 Главное меню')
     return kb
 
-def check_and_increment_limit(chat_id):
-    if chat_id in premium_users: return True
+def check_and_increment_limit(user_obj, chat_id):
+    if check_moderator(user_obj) or chat_id in premium_users: 
+        return True
     max_limit = user_limits.get(chat_id, 3)
     used_today = user_usage.get(chat_id, 0)
     if used_today >= max_limit: return False
@@ -172,6 +187,9 @@ def start_cmd(m):
     total_users.add(m.chat.id)
     if m.chat.id not in user_limits: user_limits[m.chat.id] = 3
     if m.chat.id not in user_usage: user_usage[m.chat.id] = 0
+    
+    try: bot.set_chat_menu_button(m.chat.id, types.MenuButtonDefault())
+    except: pass
         
     args = m.text.split()
     if len(args) > 1 and args[1].startswith('ref'):
@@ -187,66 +205,73 @@ def start_cmd(m):
         except: pass
 
     welcome_text = (
-        "🛸 *Сетевой Поисковый Бот активен*\n\n"
+        "🛸 <b>Сетевой Поисковый Бот активен</b>\n\n"
         "Я нахожу, фильтрую и отдаю торрент-файлы любых мировых релизов напрямую в чат.\n\n"
-        "⚡️ _Используй кнопки нижнего меню для управления._"
+        "⚡️ <i>Используй кнопки нижнего меню для управления.</i>"
     )
-    bot.send_message(m.chat.id, welcome_text, reply_markup=get_main_keyboard(), parse_mode="Markdown")
+    if check_moderator(m.from_user):
+        welcome_text += "\n\n👑 <b>Обнаружен статус модератора. Лимиты отключены полностью.</b>"
+        
+    bot.send_message(m.chat.id, welcome_text, reply_markup=get_main_keyboard(), parse_mode="HTML")
 
-@bot.message_handler(func=lambda m: m.text == '🏠 Главное меню')
+@bot.message_handler(func=lambda m: m.text == '🔴 Главное меню')
 def menu_redirect(m): start_cmd(m)
 
-@bot.message_handler(func=lambda m: m.text == '🔍 Поиск релизов')
+@bot.message_handler(func=lambda m: m.text == '🟢 Поиск релизов')
 def ask_search(m): bot.send_message(m.chat.id, "✏️ Введи название релиза для поиска:")
 
-@bot.message_handler(func=lambda m: m.text == '📂 Каталог тем')
+@bot.message_handler(func=lambda m: m.text == '🟢 Каталог тем')
 def show_cat(m):
     kb = types.InlineKeyboardMarkup(row_width=2)
     for name, fid in CAT_MAP.items(): kb.add(types.InlineKeyboardButton(name, callback_data=f"c{fid}"))
     bot.send_message(m.chat.id, "📂 Выберите категорию:", reply_markup=kb)
 
-@bot.message_handler(func=lambda m: m.text == '👥 Рефералы и Лимиты')
+@bot.message_handler(func=lambda m: m.text == '🔵 Рефералы и Лимиты')
 def show_ref(m):
     bot_info = bot.get_me()
     ref_link = f"https://t.me/{bot_info.username}?start=ref{m.chat.id}"
     invited = len(referrals.get(m.chat.id, []))
-    status_text = "*∞ Безлимит*" if m.chat.id in premium_users else f"*{user_usage.get(m.chat.id, 0)} из {user_limits.get(m.chat.id, 3)} запросов сегодня*"
+    
+    if check_moderator(m.from_user) or m.chat.id in premium_users:
+        status_text = "<b>∞ Безлимит (Модератор/Премиум)</b>"
+    else:
+        status_text = f"<b>{user_usage.get(m.chat.id, 0)} из {user_limits.get(m.chat.id, 3)} запросов сегодня</b>"
 
     text = (
-        "👥 *Реферальная система и Лимиты*\n\n"
+        "👥 <b>Реферальная система и Лимиты</b>\n\n"
         f"▪️ Текущий статус: {status_text}\n"
-        f"▪️ Приглашено друзей: *{invited}*\n\n"
-        f"🔗 Ваша реф. ссылка:\n`{ref_link}`\n\n"
-        "💡 _Каждый друг навсегда добавляет +2 поисковых запроса к вашему суточному лимиту!_"
+        f"▪️ Приглашено друзей: <b>{invited}</b>\n\n"
+        f"🔗 Ваша реф. ссылка:\n<code>{ref_link}</code>\n\n"
+        "💡 <i>Каждый друг навсегда добавляет +2 поисковых запроса к вашему суточному лимиту!</i>"
     )
-    bot.send_message(m.chat.id, text, parse_mode="Markdown")
+    bot.send_message(m.chat.id, text, parse_mode="HTML")
 
-@bot.message_handler(func=lambda m: m.text == '⭐ Безлимитный доступ')
+@bot.message_handler(func=lambda m: m.text == '🔵 Безлимитный доступ')
 def show_premium(m):
     kb = types.InlineKeyboardMarkup()
     kb.add(types.InlineKeyboardButton("💳 Оформить подписку за 49₽", callback_data="buy_premium"))
     text = (
-        "⭐ *Полный Безлимит*\n\n"
-        "Всего за *49 рублей в месяц* подписка полностью снимает любые ограничения на поиск релизов.\n"
+        "⭐ <b>Полный Безлимит</b>\n\n"
+        "Всего за <b>49 рублей в месяц</b> подписка полностью снимает любые ограничения на поиск релизов.\n"
     )
-    bot.send_message(m.chat.id, text, reply_markup=kb, parse_mode="Markdown")
+    bot.send_message(m.chat.id, text, reply_markup=kb, parse_mode="HTML")
 
 @bot.message_handler(commands=['stats'])
 def show_stat(m):
     text = (
-        "📊 *Системная статистика ядра:*\n\n"
-        f"• Активных сессий: `{len(total_users)}`\n"
-        f"• Премиум-аккаунтов: `{len(premium_users)}`\n"
-        f"• Обработано поисковых индексов: `{total_requests_count}`\n"
-        f"• Базовый шлюз парсинга: `{BASE_URL.replace('https://', '')} (Rutracker)`"
+        "📊 <b>Системная статистика ядра:</b>\n\n"
+        f"• Активных сессий: <code>{len(total_users)}</code>\n"
+        f"• Премиум-аккаунтов: <code>{len(premium_users)}</code>\n"
+        f"• Обработано поисковых индексов: <code>{total_requests_count}</code>\n"
+        f"• Базовый шлюз парсинга: <code>{BASE_URL.replace('https://', '')} (Rutracker)</code>"
     )
-    bot.send_message(m.chat.id, text, parse_mode="Markdown")
+    bot.send_message(m.chat.id, text, parse_mode="HTML")
 
-@bot.message_handler(func=lambda m: m.text not in ['🔍 Поиск релизов', '📂 Каталог тем', '👥 Рефералы и Лимиты', '⭐ Безлимитный доступ', '🏠 Главное меню', '/start'])
+@bot.message_handler(func=lambda m: m.text not in ['🟢 Поиск релизов', '🟢 Каталог тем', '🔵 Рефералы и Лимиты', '🔵 Безлимитный доступ', '🔴 Главное меню', '/start'])
 def handle_text(m):
     global total_requests_count
-    if not check_and_increment_limit(m.chat.id):
-        bot.send_message(m.chat.id, "⚠️ Суточный лимит исчерпан. Расширь его через друзей или оформи ⭐ подписку.")
+    if not check_and_increment_limit(m.from_user, m.chat.id):
+        bot.send_message(m.chat.id, "⚠️ Суточный лимит исчерпан. Расширь его через друзей или оформи подписку.")
         return
 
     total_requests_count += 1
@@ -268,7 +293,7 @@ def callbacks(c):
     bot.answer_callback_query(c.id)
     
     if c.data.startswith('c'):
-        if not check_and_increment_limit(cid):
+        if not check_and_increment_limit(c.from_user, cid):
             bot.send_message(cid, "⚠️ Лимит исчерпан.")
             return        
         res = parse_rutracker({'f': c.data[1:]})
@@ -286,10 +311,13 @@ def callbacks(c):
             bot.send_document(cid, f, caption="✅ Файл готов.")
         except: bot.send_message(cid, "❌ Ошибка загрузки торрента.")
     
-    # Клик по раздаче: Сбор инфы, вывод превью и ИИ вердикта цитатой
     elif c.data.startswith('v'):
+        if not check_and_increment_limit(c.from_user, cid):
+            bot.send_message(cid, "⚠️ Лимит исчерпан для просмотра карточек.")
+            return
+
         tid = c.data[1:]
-        wait_msg = bot.send_message(cid, "⏳ _Загружаю карточку релиза и генерирую отзыв ИИ..._", parse_mode="Markdown")
+        wait_msg = bot.send_message(cid, "⏳ <i>Загружаю карточку релиза и генерирую отзыв ИИ...</i>", parse_mode="HTML")
         
         img_url, description, comments = parse_topic_details(tid)
         summary = get_ai_summary(comments)
@@ -297,10 +325,13 @@ def callbacks(c):
         try: bot.delete_message(cid, wait_msg.message_id)
         except: pass
         
-        kb = types.InlineKeyboardMarkup()
+        kb = types.InlineKeyboardMarkup(row_width=2)
         kb.add(types.InlineKeyboardButton("📥 Скачать .torrent", callback_data=f"d{tid}"))
+        kb.add(
+            types.InlineKeyboardButton("👥 Рефка", callback_data="inline_ref"),
+            types.InlineKeyboardButton("⭐ Подписка", callback_data="inline_sub")
+        )
         
-        # Находим метаданные из сохраненного поиска для заголовка
         title_text = "Детали релиза"
         if cid in user_data and 'res' in user_data[cid]:
             for item in user_data[cid]['res']:
@@ -308,12 +339,15 @@ def callbacks(c):
                     title_text = item['title']
                     break
                     
-        safe_desc = html.escape(description)
+        safe_title = clean_html(title_text)
+        safe_desc = clean_html(description)
+        safe_summary = clean_html(summary)
+        
         card_text = (
-            f"📦 <b>{html.escape(title_text)}</b>\n\n"
+            f"📦 <b>{safe_title}</b>\n\n"
             f"📋 <b>Описание:</b>\n<i>{safe_desc}</i>\n\n"
             f"🤖 <b>Вердикт ИИ по комментариям:</b>\n"
-            f"<blockquote>{html.escape(summary)}</blockquote>"
+            f"<blockquote>{safe_summary}</blockquote>"
         )
         
         try:
@@ -322,12 +356,16 @@ def callbacks(c):
             else:
                 bot.send_message(cid, card_text, reply_markup=kb, parse_mode="HTML")
         except Exception as e:
-            # Фолбэк если картинка не прошла валидацию телеграма
             bot.send_message(cid, card_text, reply_markup=kb, parse_mode="HTML")
             
-    elif c.data == 'buy_premium':
+    elif c.data == 'buy_premium' or c.data == 'inline_sub':
         premium_users.add(cid)
         bot.send_message(cid, "🎉 Подписка успешно оформлена! Лимиты сняты полностью.")
+        
+    elif c.data == 'inline_ref':
+        bot_info = bot.get_me()
+        ref_link = f"https://t.me/{bot_info.username}?start=ref{cid}"
+        bot.send_message(cid, f"🔗 <b>Ваша реферальная ссылка:</b>\n<code>{ref_link}</code>\n\nПоделитесь ей, чтобы увеличить лимиты!", parse_mode="HTML")
 
 if __name__ == '__main__':
     if login():
