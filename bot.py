@@ -2,6 +2,7 @@ import os, telebot, requests, io, html, re, datetime
 from bs4 import BeautifulSoup
 from telebot import types
 from google import genai
+import urllib.parse
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 R_LOGIN = os.environ.get("RUTRACKER_LOGIN")
@@ -25,7 +26,7 @@ BASE_URL = DOMAINS[0]
 
 CAT_MAP = {"🎬 Кино": "7", "📺 Сериалы": "189", "🎮 Игры": "9", "📚 Книги": "10"}
 
-# Твой ник для вечного безлимита
+# Твой ник для вечного безлимита и админ-функций
 MODERATORS = ["Ki_l1"]
 
 total_users = set()
@@ -60,9 +61,17 @@ def check_moderator(user_obj):
     username = getattr(user_obj, 'username', None)
     return username and username.lower() in [m.lower() for m in MODERATORS]
 
-def parse_rutracker(params):
+def parse_rutracker(query_text, category_id=None):
     try:
-        resp = r_session.get(f"{BASE_URL}/forum/tracker.php", params=params, timeout=25)
+        if query_text:
+            encoded_query = urllib.parse.quote(query_text.encode('windows-1251'))
+            url = f"{BASE_URL}/forum/tracker.php?nm={encoded_query}"
+        elif category_id:
+            url = f"{BASE_URL}/forum/tracker.php?f={category_id}"
+        else:
+            return []
+
+        resp = r_session.get(url, timeout=25)
         if resp.status_code != 200 or "ddos" in resp.text.lower(): return []
         resp.encoding = 'windows-1251'
         soup = BeautifulSoup(resp.text, 'html.parser')
@@ -132,11 +141,12 @@ def get_ai_summary(comments):
         return response.text.strip()
     except: return "Не удалось сгенерировать вердикт ИИ."
 
+# Новая клавиатура с красивыми тематическими эмодзи
 def get_main_keyboard():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.row('🟢 Поиск релизов', '🟢 Каталог тем')
-    kb.row('🔵 Рефералы и Лимиты', '🔵 Безлимитный доступ')
-    kb.row('🔴 Главное меню')
+    kb.row('🔍 Поиск релизов', '📂 Каталог тем')
+    kb.row('👥 Рефералы и Лимиты', '⭐ Безлимитный доступ')
+    kb.row('🏠 Главное меню')
     return kb
 
 def check_and_increment_limit(user_obj, chat_id):
@@ -162,7 +172,9 @@ def start_cmd(m):
     if len(args) > 1 and args[1].startswith('ref'):
         try:
             referrer_id = int(args[1].replace('ref', ''))
-            if referrer_id != m.chat.id:
+            if referrer_id == m.chat.id:
+                bot.send_message(m.chat.id, "⚠️ Вы не можете активировать собственную реферальную ссылку.")
+            else:
                 if referrer_id not in referrals: referrals[referrer_id] = []
                 if m.chat.id not in referrals[referrer_id]:
                     referrals[referrer_id].append(m.chat.id)
@@ -174,26 +186,26 @@ def start_cmd(m):
     welcome_text = (
         "🛸 <b>Torrent Archive активен</b>\n\n"
         "Я нахожу, индексирую и отдаю торрент-файлы любых мировых релизов напрямую в чат.\n\n"
-        "⚡️ <i>Используй цветное меню ниже для управления.</i>"
+        "⚡️ <i>Используй интерактивное меню ниже для управления.</i>"
     )
     if check_moderator(m.from_user):
         welcome_text += "\n\n👑 <b>Обнаружен статус модератора. Полный безлимит включен.</b>"
         
     bot.send_message(m.chat.id, welcome_text, reply_markup=get_main_keyboard(), parse_mode="HTML")
 
-@bot.message_handler(func=lambda m: m.text in ['🔴 Главное меню', 'Меню', '/menu'])
+@bot.message_handler(func=lambda m: m.text in ['🏠 Главное меню', 'Меню', '/menu'])
 def menu_redirect(m): start_cmd(m)
 
-@bot.message_handler(func=lambda m: m.text in ['🟢 Поиск релизов', 'Поиск'])
+@bot.message_handler(func=lambda m: m.text in ['🔍 Поиск релизов', 'Поиск'])
 def ask_search(m): bot.send_message(m.chat.id, "✏️ Введи название релиза для поиска в архиве:", reply_markup=get_main_keyboard())
 
-@bot.message_handler(func=lambda m: m.text in ['🟢 Каталог тем', 'Каталог'])
+@bot.message_handler(func=lambda m: m.text in ['📂 Каталог тем', 'Каталог'])
 def show_cat(m):
     kb = types.InlineKeyboardMarkup(row_width=2)
     for name, fid in CAT_MAP.items(): kb.add(types.InlineKeyboardButton(name, callback_data=f"c{fid}"))
     bot.send_message(m.chat.id, "📂 Выберите категорию:", reply_markup=kb)
 
-@bot.message_handler(func=lambda m: m.text == '🔵 Рефералы и Лимиты')
+@bot.message_handler(func=lambda m: m.text == '👥 Рефералы и Лимиты')
 def show_ref(m):
     bot_info = bot.get_me()
     ref_link = f"https://t.me/{bot_info.username}?start=ref{m.chat.id}"
@@ -213,7 +225,7 @@ def show_ref(m):
     )
     bot.send_message(m.chat.id, text, reply_markup=get_main_keyboard(), parse_mode="HTML")
 
-@bot.message_handler(func=lambda m: m.text == '🔵 Безлимитный доступ')
+@bot.message_handler(func=lambda m: m.text == '⭐ Безлимитный доступ')
 def show_premium(m):
     cid = m.chat.id
     total_searches = user_total_searches.get(cid, 0)
@@ -232,13 +244,17 @@ def show_premium(m):
                        f"📅 Дата оформления: <code>{start_date.strftime('%d.%m.%Y %H:%M')}</code>\n"
             days_left_text = f"⏳ Дней до конца подписки: <b>{days_left} дней</b>"
 
+        kb = types.InlineKeyboardMarkup()
+        if check_moderator(m.from_user):
+            kb.add(types.InlineKeyboardButton("🚫 Сбросить все подписки (Админ)", callback_data="admin_drop_subs"))
+
         text = (
             f"{sub_info}"
             f"📊 Потрачено лимитов (всего поисков): <b>{total_searches} запросов</b>\n"
             f"{days_left_text}\n\n"
             f"🚀 Любые суточные ограничения для тебя полностью сняты!"
         )
-        bot.send_message(cid, text, reply_markup=get_main_keyboard(), parse_mode="HTML")
+        bot.send_message(cid, text, reply_markup=kb if check_moderator(m.from_user) else get_main_keyboard(), parse_mode="HTML")
     else:
         kb = types.InlineKeyboardMarkup()
         kb.add(types.InlineKeyboardButton("⭐️ Оформить Premium за 2 Звезды", callback_data="buy_premium"))
@@ -260,7 +276,7 @@ def show_stat(m):
     )
     bot.send_message(m.chat.id, text, parse_mode="HTML")
 
-@bot.message_handler(func=lambda m: m.text not in ['🟢 Поиск релизов', '🟢 Каталог тем', '🔵 Рефералы и Лимиты', '🔵 Безлимитный доступ', '🔴 Главное меню', '/start', 'Поиск', 'Каталог', 'Menu', 'Меню'])
+@bot.message_handler(func=lambda m: m.text not in ['🔍 Поиск релизов', '📂 Каталог тем', '👥 Рефералы и Лимиты', '⭐ Безлимитный доступ', '🏠 Главное меню', '/start', 'Поиск', 'Каталог', 'Menu', 'Меню'])
 def handle_text(m):
     global total_requests_count, user_total_searches
     if not check_and_increment_limit(m.from_user, m.chat.id):
@@ -271,7 +287,7 @@ def handle_text(m):
     user_total_searches[m.chat.id] = user_total_searches.get(m.chat.id, 0) + 1
     
     status_msg = bot.send_message(m.chat.id, "🔎 Сверяю индексы базы данных...")
-    results = parse_rutracker({'nm': m.text})
+    results = parse_rutracker(query_text=m.text)
     
     try: bot.delete_message(m.chat.id, status_msg.message_id)
     except: pass
@@ -291,7 +307,7 @@ def handle_text(m):
 
 @bot.callback_query_handler(func=lambda c: True)
 def callbacks(c):
-    global user_total_searches
+    global user_total_searches, premium_users, premium_dates
     cid = c.message.chat.id
     bot.answer_callback_query(c.id)
     
@@ -299,7 +315,7 @@ def callbacks(c):
         if not check_and_increment_limit(c.from_user, cid):
             bot.send_message(cid, "⚠️ Лимит исчерпан.")
             return        
-        results = parse_rutracker({'f': c.data[1:]})
+        results = parse_rutracker(query_text=None, category_id=c.data[1:])
         if results:
             user_total_searches[cid] = user_total_searches.get(cid, 0) + 1
             for item in results:
@@ -393,6 +409,14 @@ def callbacks(c):
         bot_info = bot.get_me()
         ref_link = f"https://t.me/{bot_info.username}?start=ref{cid}"
         bot.send_message(cid, f"🔗 <b>Ваша реферальная ссылка:</b>\n<code>{ref_link}</code>\n\nПоделитесь ей, чтобы увеличить лимиты!", parse_mode="HTML")
+
+    elif c.data == "admin_drop_subs":
+        if check_moderator(c.from_user):
+            premium_users.clear()
+            premium_dates.clear()
+            bot.send_message(cid, "🗑 <b>База активных подписок полностью очищена админом.</b>", parse_mode="HTML")
+        else:
+            bot.send_message(cid, "❌ Отказано в доступе.")
 
 # --- СЛУЖЕБНЫЕ ХЭНДЛЕРЫ ОБРАБОТКИ ПЛАТЕЖЕЙ STARS ---
 
