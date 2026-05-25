@@ -26,7 +26,6 @@ BASE_URL = DOMAINS[0]
 
 CAT_MAP = {"🎬 Кино": "7", "📺 Сериалы": "189", "🎮 Игры": "9", "📚 Книги": "10"}
 
-# Твой ник для вечного безлимита и админ-функций
 MODERATORS = ["Ki_l1"]
 
 total_users = set()
@@ -35,7 +34,6 @@ referrals = {}
 user_limits = {}    
 user_usage = {}     
 
-# Статистика лимитов и дат для подписок
 premium_users = set()       
 premium_dates = {}         
 user_total_searches = {}   
@@ -94,6 +92,7 @@ def parse_rutracker(query_text, category_id=None):
         return unique[:10]
     except: return []
 
+# Улучшенный сбор топика и комментариев
 def parse_topic_details(tid):
     try:
         resp = r_session.get(f"{BASE_URL}/forum/viewtopic.php?t={tid}", timeout=15)
@@ -114,11 +113,21 @@ def parse_topic_details(tid):
             if valid_lines:
                 description = "\n".join(valid_lines[:3])[:350] + "..."
 
+        # Более точечный поиск комментов: исключаем цитаты (q) и берем чистый текст постов
         comments = []
-        for post in soup.find_all('span', class_='postbody')[1:]: 
+        posts = soup.find_all('td', class_='message')
+        # Пропускаем первый пост (это само описание раздачи)
+        for post in posts[1:]:
+            # Удаляем цитаты внутри комментариев, чтобы ИИ не путался
+            for quote in post.find_all('table', class_='forumline'):
+                quote.decompose()
+            
             text = post.get_text(strip=True)
-            if text and len(text) > 10: comments.append(text[:200])
-            if len(comments) >= 20: break
+            if text and len(text) > 15:
+                # Убираем лишние символы новой строки и пробелы
+                clean_text = " ".join(text.split())
+                comments.append(clean_text[:250])
+            if len(comments) >= 15: break
             
         return img_url, description, comments
     except:
@@ -127,21 +136,28 @@ def parse_topic_details(tid):
 def get_ai_summary(comments):
     if not ai_client or not comments:
         return "Отзывы к релизу отсутствуют или в ветке пока нет обсуждений."
-    raw_text = "\n--- Отзыв ---\n".join(comments)
+    
+    # Собираем чистый текст для отправки в модель
+    raw_text = "\n".join([f"- {c}" for c in comments])
+    
     prompt = (
-        "Ты — технический ассистент торрент-бота. Проанализируй комментарии пользователей к раздаче. "
-        "Выдай краткий жесткий вердикт (строго до 2 предложений). Напиши, стабилен ли релиз, "
-        "нет ли проблем со звуком, багов или проблем на Windows 11. Пиши без приветствий, сразу суть."
+        "Ты — полезный ИИ-ассистент в торрент-боте. Твоя задача — прочитать отзывы пользователей "
+        "о релизе ниже и составить ультра-краткое резюме (максимум 2 предложения).\n"
+        "Напиши четко: рабочая ли раздача, какое качество (звук/видео), нет ли вирусов или вылетов на Windows 11.\n"
+        "Пиши сразу суть, без вводных фраз вроде 'На основе комментариев...'.\n\n"
+        f"Вот комментарии пользователей:\n{raw_text}"
     )
     try:
         response = ai_client.models.generate_content(
             model='gemini-1.5-flash',
-            contents=prompt + "\n\nВот комментарии:\n" + raw_text
+            contents=prompt
         )
-        return response.text.strip()
-    except: return "Не удалось сгенерировать вердикт ИИ."
+        result = response.text.strip()
+        return result if result else "Не удалось сформировать однозначный вердикт по отзывам."
+    except Exception as e: 
+        print(f"Ошибка Gemini API: {e}")
+        return "Не удалось сгенерировать вердикт ИИ."
 
-# Новая клавиатура с красивыми тематическими эмодзи
 def get_main_keyboard():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row('🔍 Поиск релизов', '📂 Каталог тем')
@@ -316,6 +332,11 @@ def callbacks(c):
             bot.send_message(cid, "⚠️ Лимит исчерпан.")
             return        
         results = parse_rutracker(query_text=None, category_id=c.data[1:])
+        
+        # Удаляем сообщение с выбором категории, чтобы не засорять историю
+        try: bot.delete_message(cid, c.message.message_id)
+        except: pass
+
         if results:
             user_total_searches[cid] = user_total_searches.get(cid, 0) + 1
             for item in results:
@@ -335,6 +356,10 @@ def callbacks(c):
             r = r_session.get(f"{BASE_URL}/forum/dl.php?t={tid}", headers={'Referer': f"{BASE_URL}/forum/viewtopic.php?t={tid}"}, timeout=20)
             f = io.BytesIO(r.content); f.name = f"{tid}.torrent"
             bot.send_document(cid, f, caption="✅ Файл готов.")
+            
+            # Удаляем саму карточку релиза после успешного скачивания файла (по желанию)
+            try: bot.delete_message(cid, c.message.message_id)
+            except: pass
         except: bot.send_message(cid, "❌ Ошибка загрузки торрента.")
     
     elif c.data.startswith('v'):
@@ -343,6 +368,11 @@ def callbacks(c):
             return
 
         tid = c.data[1:]
+        
+        # Удаляем старое текстовое сообщение с кнопкой «Открыть карточку релиза»
+        try: bot.delete_message(cid, c.message.message_id)
+        except: pass
+
         wait_msg = bot.send_message(cid, "⏳ <i>Загружаю карточку релиза и генерирую отзыв ИИ...</i>", parse_mode="HTML")
         
         img_url, description, comments = parse_topic_details(tid)
@@ -442,5 +472,5 @@ def stars_payment_success(m):
 
 if __name__ == '__main__':
     if login():
-        print("🚀 TORRENT ARCHIVE УСПЕШНО ЗАПУЩЕН НА БАЗЕ STARS!")
+        print("🚀 TORRENT ARCHIVE ОБНОВЛЕН: ИИ-ОТЗЫВЫ И ОЧИСТКА ИНТЕРФЕЙСА РАБОТАЮТ!")
         bot.polling(none_stop=True)
