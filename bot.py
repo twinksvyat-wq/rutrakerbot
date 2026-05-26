@@ -75,7 +75,7 @@ STRINGS = {
         'show_cat': "📂 Выберите категорию для быстрого просмотра:",
         'search_status': "🔎 Сверяю индексы базы данных...",
         'no_results': "❌ По данному запросу ничего не найдено.",
-        'limit_exceeded': "⚠️ Суточный лимит исчерпан. Обновите подписку или пригласите друзей.",
+        'limit_exceeded': "⚠️ Суточный лимит исчерпан. Лимиты обновляются каждый день автоматически.",
         'card_loading': "⏳ <i>Формирую карточку релиза и опрашиваю Gemini ИИ...</i>",
         'verdict_title': "🤖 <b>Вердикт ИИ по отзывам:</b>",
         'details_title': "📋 <b>Детали сборки:</b>",
@@ -106,7 +106,7 @@ STRINGS = {
         'show_cat': "📂 Select a category for quick browsing:",
         'search_status': "🔎 Checking database matrix...",
         'no_results': "❌ Nothing found for this request.",
-        'limit_exceeded': "⚠️ Daily limit exceeded. Upgrade your subscription or invite friends.",
+        'limit_exceeded': "⚠️ Daily limit exceeded. Limits are refreshed automatically every day.",
         'card_loading': "⏳ <i>Generating release card and querying Gemini AI...</i>",
         'verdict_title': "🤖 <b>AI Verdict based on reviews:</b>",
         'details_title': "📋 <b>Build Details:</b>",
@@ -141,6 +141,9 @@ total_requests_count = 0
 referrals = {}      
 user_limits = {}    
 user_usage = {}     
+
+# Отслеживание даты для автосброса лимитов каждые 24 часа
+last_reset_date = datetime.date.today()
 
 premium_users = set()       
 premium_dates = {}         
@@ -242,7 +245,7 @@ def parse_rutracker(query_text, category_id=None, retry=True):
             
             for td in row.find_all('td'):
                 td_text = td.get_text().upper()
-                if any(u in td_text for u in ['GB', 'MB', 'ГБ', 'МБ']):
+                if any(u in td_text for u in ['GB', 'MB', 'ГБ', 'МБ', 'KB', 'КБ']):
                     size = td.get_text(strip=True).split('↓')[0].strip()
                     break
                     
@@ -265,106 +268,75 @@ def parse_rutracker(query_text, category_id=None, retry=True):
         return []
 
 # ==========================================
-# ИСПРАВЛЕННЫЙ ПАРСЕР СТРАНИЦЫ РАЗДАЧИ
+# ИСПРАВЛЕННЫЙ ЧИСТЫЙ ПАРСЕР СТРАНИЦЫ
 # ==========================================
 def parse_topic_details(tid):
     try:
         url = f"{BASE_URL}/forum/viewtopic.php?t={tid}"
         resp = r_session.get(url, timeout=20)
         if resp.status_code != 200:
-            return None, "Не удалось загрузить страницу топика.", []
+            return None, {}, []
             
         resp.encoding = 'windows-1251'
         soup = BeautifulSoup(resp.text, 'html.parser')
         
-        # Получение постера
         img_url = None
         img_tag = soup.find('var', class_='postImg')
         if img_tag and img_tag.get('title'):
             img_url = img_tag['title']
 
-        # Извлекаем основной контейнер раздачи на Rutracker
         postbody = soup.find('span', class_='postbody')
         if not postbody:
             postbody = soup.find('td', class_='message')
         
-        description_text = ""
+        details = {}
+        fallback_lines = []
+        
         if postbody:
             post_copy = BeautifulSoup(str(postbody), 'html.parser')
-            
-            # Важно: Вырезаем все спойлеры, чтобы убрать скриншоты и логи установки
             for sp in post_copy.find_all('div', class_='sp-wrap'):
                 sp.decompose()
                 
             full_text = post_copy.get_text()
             lines = [l.strip() for l in full_text.split('\n') if l.strip()]
             
-            # Сбор структурированных характеристик
-            details = {}
-            
-            # Находим точный системный вес раздачи из разметки Rutracker (надёжный способ)
             sys_size_tag = soup.find(id='tor-size-h')
             if sys_size_tag:
-                details['вес'] = sys_size_tag.get_text(strip=True)
-
-            # Если через ID не нашлось, ищем по регулярке системной строки «Размер раздачи»
-            if 'вес' not in details:
-                size_match = re.search(r'Размер раздачи:\s*([0-9.,]+\s*(?:GB|MB|KB|ГБ|МБ|КБ|TB|ТБ)[^\n<]*)', soup.get_text(), re.IGNORECASE)
-                if size_match and "совпадающие" not in size_match.group(1).lower():
-                    details['вес'] = size_match.group(1).strip()[:50]
+                s_text = sys_size_tag.get_text(strip=True)
+                s_text = re.sub(r'\s+', ' ', s_text).strip()
+                if s_text and not any(x in s_text.lower() for x in ["совпадающие", "файлы", "шт"]):
+                    details['size'] = s_text
 
             for line in lines:
                 line_lower = line.lower()
-                if 'жанр' in line_lower and 'жанр' not in details:
-                    details['жанр'] = line.split(':', 1)[-1].strip()
-                elif ('версия' in line_lower or 'v/' in line_lower or 'update' in line_lower) and 'версия' not in details:
-                    details['версия'] = line.split(':', 1)[-1].strip()
-                elif ('размер' in line_lower or 'вес' in line_lower) and 'вес' not in details:
+                if 'жанр' in line_lower and 'genre' not in details:
+                    details['genre'] = line.split(':', 1)[-1].strip()
+                elif ('версия' in line_lower or 'v/' in line_lower or 'update' in line_lower) and 'version' not in details:
+                    details['version'] = line.split(':', 1)[-1].strip()
+                elif ('размер' in line_lower or 'вес' in line_lower) and 'size' not in details:
                     possible_weight = line.split(':', 1)[-1].strip()
-                    # Исключаем попадание строк «Совпадающие по размеру файлы» в описание веса
-                    if "совпадающие" not in possible_weight.lower() and "файлы" not in possible_weight.lower():
-                        details['вес'] = possible_weight
-                elif 'язык' in line_lower and 'язык' not in details:
-                    details['язык'] = line.split(':', 1)[-1].strip()
-                elif ('таблетка' in line_lower or 'лекарство' in line_lower or 'crack' in line_lower) and 'таблетка' not in details:
-                    details['таблетка'] = line.split(':', 1)[-1].strip()
-                elif ('разработчик' in line_lower or 'издатель' in line_lower) and 'разработчик' not in details:
-                    details['разработчик'] = line.split(':', 1)[-1].strip()
+                    if possible_weight and not any(x in possible_weight.lower() for x in ["совпадающие", "файлы", "шт"]):
+                        if any(u in possible_weight.upper() for u in ['GB', 'MB', 'ГБ', 'МБ', 'KB', 'КБ', 'TB', 'ТБ']):
+                            details['size'] = possible_weight
+                elif 'язык' in line_lower and 'language' not in details:
+                    details['language'] = line.split(':', 1)[-1].strip()
+                elif ('таблетка' in line_lower or 'лекарство' in line_lower or 'crack' in line_lower) and 'crack' not in details:
+                    details['crack'] = line.split(':', 1)[-1].strip()
+                elif ('разработчик' in line_lower or 'издатель' in line_lower or 'developer' in line_lower) and 'developer' not in details:
+                    details['developer'] = line.split(':', 1)[-1].strip()
 
-            # Крайний случай общего глобального поиска веса, если всё остальное не дало результатов
-            if 'вес' not in details:
-                size_match = re.search(r'Размер(?:\s+раздачи)?:\s*([0-9.,]+\s*(?:GB|MB|KB|ГБ|МБ|КБ|TB|ТБ)[^\n<]*)', soup.get_text(), re.IGNORECASE)
-                if size_match and "совпадающие" not in size_match.group(1).lower():
-                    details['вес'] = size_match.group(1).strip()[:50]
+                if len(line) > 12 and not line.startswith('[') and not line.endswith(']'):
+                    fallback_lines.append(line)
 
-            info_blocks = []
-            if 'жанр' in details: info_blocks.append(f"🎮 <b>Жанр:</b> {details['жанр']}")
-            if 'версия' in details: info_blocks.append(f"ℹ️ <b>Версия:</b> {details['версия']}")
-            if 'вес' in details: info_blocks.append(f"💼 <b>Размер / Вес:</b> {details['вес']}")
-            if 'язык' in details: info_blocks.append(f"🗣 <b>Язык:</b> {details['язык']}")
-            if 'таблетка' in details: info_blocks.append(f"🏴‍☠️ <b>Таблетка:</b> {details['таблетка']}")
-            if 'разработчик' in details: info_blocks.append(f"👨‍💻 <b>Разработчик:</b> {details['разработчик']}")
+            if 'size' not in details:
+                size_match = re.search(r'(?:Размер раздачи|Размер|Size):\s*([0-9.,]+\s*(?:GB|MB|KB|ГБ|МБ|КБ|TB|ТБ)[^\n<]*)', soup.get_text(), re.IGNORECASE)
+                if size_match:
+                    s_text = size_match.group(1).strip()
+                    if not any(x in s_text.lower() for x in ["совпадающие", "файлы", "шт"]):
+                        details['size'] = s_text[:40]
 
-            # Если структурированных параметров мало — берем текстовое превью, сохраняя найденные блоки
-            if len(info_blocks) < 2:
-                fallback_lines = []
-                for l in lines:
-                    if len(l) > 12 and not l.startswith('[') and not l.endswith(']'):
-                        fallback_lines.append(l)
-                    if len(fallback_lines) >= 8:
-                        break
-                
-                header_part = "\n".join(info_blocks) + "\n\n" if info_blocks else ""
-                if fallback_lines:
-                    description_text = header_part + "\n".join(fallback_lines)
-                else:
-                    description_text = header_part + "Техническая сводка доступна непосредственно внутри загружаемого торрент-файла."
-            else:
-                description_text = "\n".join(info_blocks)
-        else:
-            description_text = "Описание релиза не найдено или скрыто трекером."
+            details['fallback_lines'] = fallback_lines[:8]
 
-        # Сбор комментариев для ИИ
         comments = []
         all_posts = soup.find_all('tr', class_=re.compile(r'prow\d+'))
         if len(all_posts) > 1:
@@ -382,13 +354,13 @@ def parse_topic_details(tid):
                 if len(comments) >= 10: 
                     break
 
-        return img_url, description_text, comments
+        return img_url, details, comments
     except Exception as e:
         print(f"❌ Ошибка парсера страниц: {e}")
-        return None, "Ошибка обработки текстового контента страницы.", []
+        return None, {}, []
 
 # ==========================================
-# ИНТЕГРАЦИЯ С GEMINI AI API (ЛОКАЛИЗОВАННАЯ)
+# ИНТЕГРАЦИЯ С GEMINI AI API
 # ==========================================
 def get_ai_summary(comments, lang='ru'):
     if not ai_client or not comments:
@@ -411,7 +383,7 @@ def get_ai_summary(comments, lang='ru'):
         return "Ошибка генерации вердикта ИИ." if lang == 'ru' else "AI verdict generation error."
 
 # ==========================================
-# ГЕНЕРАТОРЫ ИНТЕРФЕЙСА И ПАГИНАЦИИ
+# ГЕНЕРАТОРЫ ИНТЕРФЕЙСА И АВТООБНОВЛЕНИЕ ЛИМИТОВ
 # ==========================================
 def get_main_keyboard(chat_id):
     lang = user_lang.get(chat_id, 'ru')
@@ -423,12 +395,23 @@ def get_main_keyboard(chat_id):
     return kb
 
 def check_and_increment_limit(user_obj, chat_id):
+    global last_reset_date, user_usage
+    
+    # Автоматический ежесуточный сброс лимитов при первом же запросе нового дня
+    today = datetime.date.today()
+    if today != last_reset_date:
+        user_usage.clear()
+        last_reset_date = today
+        print(f"🔄 Смена суток! Наступил {today}. Все пользовательские лимиты сброшены.")
+
     if check_moderator(user_obj) or chat_id in premium_users: 
         return True
+        
     max_limit = user_limits.get(chat_id, 3)
     used_today = user_usage.get(chat_id, 0)
     if used_today >= max_limit: 
         return False
+        
     user_usage[chat_id] = used_today + 1
     return True
 
@@ -687,19 +670,64 @@ def callbacks(c):
         clear_previous_interface_messages(cid)
 
         wait_msg = bot.send_message(cid, STRINGS[lang]['card_loading'], parse_mode="HTML")
-        img_url, description, comments = parse_topic_details(tid)
+        img_url, details, comments = parse_topic_details(tid)
         summary = get_ai_summary(comments, lang)
         
         try: bot.delete_message(cid, wait_msg.message_id)
         except: pass
         
+        if not details.get('size') or details.get('size') == '---':
+            if cid in user_searches and "results" in user_searches[cid]:
+                for item in user_searches[cid]["results"]:
+                    if item["tid"] == tid and item["size"] != '---':
+                        details['size'] = item["size"]
+                        break
+
+        LABELS = {
+            'ru': {
+                'genre': '🎮 <b>Жанр:</b>',
+                'version': 'ℹ️ <b>Версия:</b>',
+                'size': '💼 <b>Размер / Вес:</b>',
+                'language': '🗣 <b>Язык:</b>',
+                'crack': '🏴‍☠️ <b>Таблетка:</b>',
+                'developer': '👨‍💻 <b>Разработчик:</b>',
+                'no_desc': 'Описание релиза не найдено или скрыто трекером.'
+            },
+            'en': {
+                'genre': '🎮 <b>Genre:</b>',
+                'version': 'ℹ️ <b>Version:</b>',
+                'size': '💼 <b>Size / Weight:</b>',
+                'language': '🗣 <b>Language:</b>',
+                'crack': '🏴‍☠️ <b>Crack / Medicine:</b>',
+                'developer': '👨‍💻 <b>Developer:</b>',
+                'no_desc': 'Release description not found or hidden by tracker.'
+            }
+        }
+        
+        lbls = LABELS[lang]
+        info_blocks = []
+        if 'genre' in details: info_blocks.append(f"{lbls['genre']} {details['genre']}")
+        if 'version' in details: info_blocks.append(f"{lbls['version']} {details['version']}")
+        if 'size' in details: info_blocks.append(f"{lbls['size']} {details['size']}")
+        if 'language' in details: info_blocks.append(f"{lbls['language']} {details['language']}")
+        if 'crack' in details: info_blocks.append(f"{lbls['crack']} {details['crack']}")
+        if 'developer' in details: info_blocks.append(f"{lbls['developer']} {details['developer']}")
+
+        if len(info_blocks) < 2 and details.get('fallback_lines'):
+            header_part = "\n".join(info_blocks) + "\n\n" if info_blocks else ""
+            description_text = header_part + "\n".join(details['fallback_lines'])
+        elif not info_blocks:
+            description_text = lbls['no_desc']
+        else:
+            description_text = "\n".join(info_blocks)
+            
         kb = types.InlineKeyboardMarkup(row_width=2)
         kb.add(types.InlineKeyboardButton(STRINGS[lang]['download_btn'], callback_data=f"d{tid}"))
         kb.add(types.InlineKeyboardButton(STRINGS[lang]['ref_btn'], callback_data="inline_ref"))
         kb.add(types.InlineKeyboardButton(STRINGS[lang]['sub_btn'], callback_data="inline_sub"))
         
         title_text = "Release Card" if lang == 'en' else "Карточка релиза"
-        card_text = f"📦 <b>{title_text}</b>\n\n{STRINGS[lang]['details_title']}\n{description}\n\n{STRINGS[lang]['verdict_title']}\n<blockquote>{clean_html(summary)}</blockquote>"
+        card_text = f"📦 <b>{title_text}</b>\n\n{STRINGS[lang]['details_title']}\n{description_text}\n\n{STRINGS[lang]['verdict_title']}\n<blockquote>{clean_html(summary)}</blockquote>"
         
         try:
             if img_url and (img_url.startswith('http://') or img_url.startswith('https://')):
@@ -757,5 +785,5 @@ def payment_success(m):
 # ==========================================
 if __name__ == '__main__':
     if login():
-        print("🚀 Бот запущен. Автономные описания и пагинация активны.")
+        print("🚀 Бот запущен. Автономные описания, локализация и автосброс лимитов активны.")
         bot.infinity_polling(timeout=15, long_polling_timeout=5)
