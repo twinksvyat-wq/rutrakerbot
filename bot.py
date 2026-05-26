@@ -11,7 +11,7 @@ from telebot import types
 from google import genai
 
 # ==========================================
-# НАСТРОЙКА КОНФИГУРАЦИИ И СЕКРЕТОВ
+# НАСТРОЙКА KONФИГУРАЦИИ И СЕКРЕТОВ
 # ==========================================
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 R_LOGIN = os.environ.get("RUTRACKER_LOGIN")
@@ -265,14 +265,14 @@ def parse_rutracker(query_text, category_id=None, retry=True):
         return []
 
 # ==========================================
-# НОВЫЙ АВТОНОМНЫЙ ПАРСЕР СТРАНИЦЫ РАЗДАЧИ
+# ИСПРАВЛЕННЫЙ ПАРСЕР СТРАНИЦЫ РАЗДАЧИ (С ЛОКАЛИЗАЦИЕЙ FIELDS)
 # ==========================================
-def parse_topic_details(tid):
+def parse_topic_details(tid, lang='ru'):
     try:
         url = f"{BASE_URL}/forum/viewtopic.php?t={tid}"
         resp = r_session.get(url, timeout=20)
         if resp.status_code != 200:
-            return None, "Не удалось загрузить страницу топика.", []
+            return None, ("Не удалось загрузить страницу топика." if lang == 'ru' else "Failed to load topic page."), []
             
         resp.encoding = 'windows-1251'
         soup = BeautifulSoup(resp.text, 'html.parser')
@@ -304,42 +304,81 @@ def parse_topic_details(tid):
             for line in lines:
                 line_lower = line.lower()
                 if 'жанр' in line_lower and 'жанр' not in details:
-                    details['жанр'] = line.split(':', 1)[-1].strip()
+                    val = line.split(':', 1)[-1].strip()
+                    if val: details['жанр'] = val
                 elif ('версия' in line_lower or 'v/' in line_lower or 'update' in line_lower) and 'версия' not in details:
-                    details['версия'] = line.split(':', 1)[-1].strip()
+                    val = line.split(':', 1)[-1].strip()
+                    if val: details['версия'] = val
                 elif ('размер' in line_lower or 'вес' in line_lower) and 'вес' not in details:
-                    details['вес'] = line.split(':', 1)[-1].strip()
+                    val = line.split(':', 1)[-1].strip()
+                    if val: details['вес'] = val
                 elif 'язык' in line_lower and 'язык' not in details:
-                    details['язык'] = line.split(':', 1)[-1].strip()
+                    val = line.split(':', 1)[-1].strip()
+                    if val: details['язык'] = val
                 elif ('таблетка' in line_lower or 'лекарство' in line_lower or 'crack' in line_lower) and 'таблетка' not in details:
-                    details['таблетка'] = line.split(':', 1)[-1].strip()
+                    val = line.split(':', 1)[-1].strip()
+                    if val: details['таблетка'] = val
                 elif ('разработчик' in line_lower or 'издатель' in line_lower) and 'разработчик' not in details:
-                    details['разработчик'] = line.split(':', 1)[-1].strip()
+                    val = line.split(':', 1)[-1].strip()
+                    if val: details['разработчик'] = val
+
+            # Если вес не нашелся во внутреннем тексте или пустой, вытягиваем его из системной таблицы трекера
+            if 'вес' not in details or not details['вес'].strip():
+                size_match = re.search(r'Размер(?:\s+раздачи)?:\s*([0-9.,]+\s*(?:GB|MB|KB|ГБ|МБ|КБ|TB|ТБ)[^\n<]*)', soup.get_text(), re.IGNORECASE)
+                if size_match:
+                    details['вес'] = size_match.group(1).strip()[:50]
+
+            # Динамические языковые метки полей карточки
+            labels = {
+                'ru': {
+                    'genre': '🎮 <b>Жанр:</b>',
+                    'version': 'ℹ️ <b>Версия:</b>',
+                    'weight': '💼 <b>Размер / Вес:</b>',
+                    'lang': '🗣 <b>Язык:</b>',
+                    'crack': '🏴‍☠️ <b>Таблетка:</b>',
+                    'dev': '👨‍💻 <b>Разработчик:</b>',
+                    'fallback': 'Техническая сводка доступна непосредственно внутри загружаемого торрент-файла.',
+                    'not_found': 'Описание релиза не найдено или скрыто трекером.'
+                },
+                'en': {
+                    'genre': '🎮 <b>Genre:</b>',
+                    'version': 'ℹ️ <b>Version:</b>',
+                    'weight': '💼 <b>Size / Weight:</b>',
+                    'lang': '🗣 <b>Language:</b>',
+                    'crack': '🏴‍☠️ <b>Crack:</b>',
+                    'dev': '👨‍💻 <b>Developer:</b>',
+                    'fallback': 'Technical summary is available directly inside the downloaded torrent file.',
+                    'not_found': 'Release description not found or hidden by the tracker.'
+                }
+            }
+            lbl = labels.get(lang, labels['ru'])
 
             info_blocks = []
-            if 'жанр' in details: info_blocks.append(f"🎮 <b>Жанр:</b> {details['жанр']}")
-            if 'версия' in details: info_blocks.append(f"ℹ️ <b>Версия:</b> {details['версия']}")
-            if 'вес' in details: info_blocks.append(f"💼 <b>Размер / Вес:</b> {details['вес']}")
-            if 'язык' in details: info_blocks.append(f"🗣 <b>Язык:</b> {details['язык']}")
-            if 'таблетка' in details: info_blocks.append(f"🏴‍☠️ <b>Таблетка:</b> {details['таблетка']}")
-            if 'разработчик' in details: info_blocks.append(f"👨‍💻 <b>Разработчик:</b> {details['разработчик']}")
+            if details.get('жанр'): info_blocks.append(f"{lbl['genre']} {details['жанр']}")
+            if details.get('версия'): info_blocks.append(f"{lbl['version']} {details['версия']}")
+            if details.get('вес'): info_blocks.append(f"{lbl['weight']} {details['вес']}")
+            if details.get('язык'): info_blocks.append(f"{lbl['lang']} {details['язык']}")
+            if details.get('таблетка'): info_blocks.append(f"{lbl['crack']} {details['таблетка']}")
+            if details.get('разработчик'): info_blocks.append(f"{lbl['dev']} {details['разработчик']}")
 
-            # Если структурированные параметры не поймались — берем текстовое превью раздачи
+            # Если структурированных параметров мало — берем текстовое превью, сохраняя найденные блоки
             if len(info_blocks) < 2:
                 fallback_lines = []
                 for l in lines:
                     if len(l) > 12 and not l.startswith('[') and not l.endswith(']'):
                         fallback_lines.append(l)
-                    if len(fallback_lines) >= 8: # Ограничиваемся 8 красивыми строками описания
+                    if len(fallback_lines) >= 8:
                         break
+                
+                header_part = "\n".join(info_blocks) + "\n\n" if info_blocks else ""
                 if fallback_lines:
-                    description_text = "\n".join(fallback_lines)
+                    description_text = header_part + "\n".join(fallback_lines)
                 else:
-                    description_text = "Техническая сводка доступна непосредственно внутри загружаемого торрент-файла."
+                    description_text = header_part + lbl['fallback']
             else:
                 description_text = "\n".join(info_blocks)
         else:
-            description_text = "Описание релиза не найдено или скрыто трекером."
+            description_text = lbl['not_found']
 
         # Сбор комментариев для ИИ
         comments = []
@@ -362,7 +401,7 @@ def parse_topic_details(tid):
         return img_url, description_text, comments
     except Exception as e:
         print(f"❌ Ошибка парсера страниц: {e}")
-        return None, "Ошибка обработки текстового контента страницы.", []
+        return None, ("Ошибка обработки текстового контента страницы." if lang == 'ru' else "Error processing page text."), []
 
 # ==========================================
 # ИНТЕГРАЦИЯ С GEMINI AI API
@@ -661,7 +700,7 @@ def callbacks(c):
         clear_previous_interface_messages(cid)
 
         wait_msg = bot.send_message(cid, STRINGS[lang]['card_loading'], parse_mode="HTML")
-        img_url, description, comments = parse_topic_details(tid)
+        img_url, description, comments = parse_topic_details(tid, lang)
         summary = get_ai_summary(comments)
         
         try: bot.delete_message(cid, wait_msg.message_id)
