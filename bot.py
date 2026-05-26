@@ -11,7 +11,7 @@ R_PASSWORD = os.environ.get("RUTRACKER_PASSWORD")
 GEMINI_KEY = os.environ.get("GEMINI_KEY")
 
 if not all([TOKEN, R_LOGIN, R_PASSWORD]):
-    print("❌ ОШИБКА: Не настроены обязательные секреты (Токен или логин/пароль к трекеру)!"); exit(1)
+    print("❌ ОШИБКА: Не настроены обязательные секреты GitHub!"); exit(1)
 
 if GEMINI_KEY:
     ai_client = genai.Client(api_key=GEMINI_KEY)
@@ -21,7 +21,8 @@ else:
 bot = telebot.TeleBot(TOKEN)
 r_session = requests.Session()
 r_session.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Accept-Charset': 'windows-1251,utf-8;q=0.7,*;q=0.7' # Принудительно просим рутрекер отдавать верную кодировку
 })
 
 DOMAINS = ["https://rutracker.net", "https://rutracker.org", "https://rutracker.nl"]
@@ -45,13 +46,11 @@ user_total_searches = {}
 user_messages_to_delete = {}
 
 def register_msg_for_deletion(chat_id, message_id):
-    """Регистрирует отправленное ботом сообщение для последующего автоматического удаления"""
     if chat_id not in user_messages_to_delete:
         user_messages_to_delete[chat_id] = []
     user_messages_to_delete[chat_id].append(message_id)
 
 def clear_previous_interface_messages(chat_id):
-    """Удаляет абсолютно все ранее зарегистрированные сообщения результатов поиска для чистоты чата"""
     if chat_id in user_messages_to_delete:
         for msg_id in user_messages_to_delete[chat_id]:
             try:
@@ -67,10 +66,8 @@ def login():
             data = {'login_username': R_LOGIN, 'login_password': R_PASSWORD, 'login': 'Вход'}
             res = r_session.post(f"{domain}/forum/login.php", data=data, timeout=15)
             if "login_username" not in res.text and res.status_code == 200:
-                BASE_URL = domain
-                return True
-        except: 
-            pass
+                BASE_URL = domain; return True
+        except: pass
     return False
 
 def clean_html(text):
@@ -90,8 +87,7 @@ def parse_rutracker(query_text, category_id=None):
             url = f"{BASE_URL}/forum/tracker.php?nm={encoded_query}"
         elif category_id:
             url = f"{BASE_URL}/forum/tracker.php?f={category_id}"
-        else:
-            return []
+        else: return []
 
         resp = r_session.get(url, timeout=25)
         if resp.status_code != 200 or "ddos" in resp.text.lower(): return []
@@ -116,72 +112,96 @@ def parse_rutracker(query_text, category_id=None):
                 unique.append(r)
                 seen.add(r['tid'])
         return unique[:10]
-    except: 
-        return []
+    except: return []
 
+# ✅ НОВЫЙ ИСПРАВЛЕННЫЙ ПАРСЕР ПОДРОБНОСТЕЙ
 def parse_topic_details(tid):
-    """Обновленный и устойчивый к разметке парсер описания, картинок и отзывов"""
     try:
         url = f"{BASE_URL}/forum/viewtopic.php?t={tid}"
         resp = r_session.get(url, timeout=20)
         
         if resp.status_code != 200:
-            return None, "Не удалось загрузить страницу топика (Ошибка соединения).", []
+            return None, "Не удалось загрузить страницу топика.", []
             
-        resp.encoding = 'windows-1251'
+        resp.encoding = 'windows-1251' # Rutracker всегда в windows-1251
         soup = BeautifulSoup(resp.text, 'html.parser')
         
-        # 1. Поиск постера/картинки (через var class="postImg")
+        # 1. ПОИСК ПОСТЕРА
         img_url = None
         img_tag = soup.find('var', class_='postImg')
         if img_tag and img_tag.get('title'):
             img_url = img_tag['title']
 
-        # 2. Извлечение описания раздачи
+        # 2. ИСПРАВЛЕННЫЙ ПОИСК ОПИСАНИЯ + Тех. детали
         description = "Описание релиза недоступно."
-        main_post = soup.find('span', class_='postbody')
         
-        if main_post:
-            post_copy = BeautifulSoup(str(main_post), 'html.parser')
-            # Вырезаем технические таблицы, спойлеры и скриншоты, чтобы не засорять описание
-            for r_tag in post_copy.find_all(['div', 'table'], class_=['sp-wrap', 'sp-body', 'sp-head', 'forumline']):
-                r_tag.decompose()
-                
-            lines = [line.strip() for line in post_copy.get_text().split('\n') if line.strip()]
-            valid_desc_lines = [l for l in lines if len(l) > 20 and not l.startswith('[')]
+        # Основной пост раздачи на Rutracker лежит внутри td с class='message' и id='p-XXXXXX'
+        # Нам нужен самый первый такой блок на странице
+        main_post_td = soup.find('td', class_='message', id=re.compile(r'^p-\d+'))
+        
+        if main_post_td:
+            # Делаем глубокую копию, чтобы decompose() не поломал нам комменты
+            post_copy = BeautifulSoup(str(main_post_td), 'html.parser')
             
-            if valid_desc_lines:
-                description = "\n".join(valid_desc_lines[:4])[:400] + "..."
-            else:
-                clean_lines = [l for l in lines if not l.startswith('[')]
+            # Удаляем мусор: тех. таблицы, спойлеры и шапки спойлеров
+            for r_tag in post_copy.find_all(['table', 'div', 'fieldset'], class_=['sp-wrap', 'sp-body', 'sp-head', 'forumline', 'genmed']):
+                r_tag.decompose()
+            
+            # Чистим текст от BB-кодов [center], [left] и тд.
+            clean_raw_text = post_copy.get_text()
+            clean_raw_text = re.sub(r'\[[^>]+\]', '', clean_raw_text)
+            
+            lines = [line.strip() for line in clean_raw_text.split('\n') if line.strip()]
+            
+            # Ищем технические ключи для описания
+            final_desc_parts = []
+            keys_to_find = ['Версия:', 'Вес:', 'Язык интерфейса:', 'Таблетка:', 'Жанр:', 'Разработчик:']
+            for line in lines:
+                if final_desc_parts and len(final_desc_parts) >= 6: break # Нам хватит 6 тех. деталей
+                
+                # Если строка начинается с одного из тех ключей, добавляем её
+                if any(line.lower().startswith(k.lower()) for k in keys_to_find):
+                    final_desc_parts.append(f"▪️ {line}")
+            
+            # Если тех. детали не нашли, пробуем взять просто первые содержательные строки
+            if not final_desc_parts:
+                clean_lines = [l for l in lines if len(l) > 20 and not l.startswith('[')]
                 if clean_lines:
-                    description = "\n".join(clean_lines[:3])[:350] + "..."
+                    description = "\n".join(clean_lines[:3])[:380] + "..."
+            else:
+                description = "\n".join(final_desc_parts)
 
-        # 3. Извлечение комментариев пользователей (ячейки td с классом message)
+        # 3. ИСПРАВЛЕННЫЙ ПОИСК КОММЕНТАРИЕВ
         comments = []
-        posts = soup.find_all('td', class_='message')
+        posts_tds = soup.find_all('td', class_='message', id=re.compile(r'^p-\d+'))
         
-        if len(posts) > 1:
-            for post in posts[1:]:  # Пропускаем нулевой пост (шапку темы)
-                # Точечно вырезаем цитаты, чтобы ИИ не читал повторы
-                for quote in post.find_all('table', class_='forumline'):
+        # Если комментарии есть (len > 1), пропускаем шапку раздачи (posts[0])
+        if posts_tds and len(posts_tds) > 1:
+            for post_td in posts_tds[1:]: 
+                # Удаляем цитаты других пользователей
+                for quote in post_td.find_all('table', class_='forumline'):
                     quote.decompose()
-                for spoiler in post.find_all('div', class_='sp-wrap'):
+                # Удаляем спойлеры внутри комментов
+                for spoiler in post_td.find_all('div', class_='sp-wrap'):
                     spoiler.decompose()
                     
-                text = post.get_text(strip=True)
-                if text and len(text) > 15:
-                    clean_comment = " ".join(text.split())
-                    comments.append(clean_comment[:300])
+                text = post_td.get_text(strip=True)
+                # Чистим от BB-кодов
+                text = re.sub(r'\[[^>]+\]', '', text)
+                
+                # Игнорируем совсем короткие комменты ("спасибо" и тд)
+                if text and len(text) > 20:
+                    clean_text = " ".join(text.split())
+                    comments.append(clean_text[:250])
                     
-                if len(comments) >= 12: 
-                    break
+                # Хватит 10 комментов для ИИ
+                if len(comments) >= 10: break
 
         return img_url, description, comments
         
     except Exception as e:
         print(f"❌ Ошибка парсинга топика {tid}: {e}")
-        return None, "Произошла внутренняя ошибка при разборе страницы топика.", []
+        return None, "Внутренняя ошибка разбора топика.", []
 
 def get_ai_summary(comments):
     if not ai_client or not comments:
@@ -189,19 +209,16 @@ def get_ai_summary(comments):
     
     raw_text = "\n".join([f"- {c}" for c in comments])
     prompt = (
-        "Ты — полезный ИИ-ассистент в торрент-боте. Твоя задача — прочитать отзывы пользователей "
-        "о релизе ниже и составить ультра-краткое резюме (максимум 2 предложения).\n"
-        "Напиши четко: рабочая ли раздача, какое качество (звук/видео), нет ли вирусов или вылетов на Windows 11.\n"
-        "Пиши сразу суть, без вводных фраз вроде 'На основе комментариев...'.\n\n"
-        f"Вот комментарии пользователей:\n{raw_text}"
+        "Ты — технический ассистент торрент-бота Torrent Archive. Твоя задача — прочитать отзывы пользователей "
+        "и составить ультра-краткое резюме (максимум 2 предложения).\n"
+        "Напиши четко: рабочая ли раздача, какое качество, нет ли вирусов или вылетов на Windows 11.\n"
+        "Пиши сразу суть, без вводных фраз.\n\n"
+        f"Вот комментарии:\n{raw_text}"
     )
     try:
-        response = ai_client.models.generate_content(
-            model='gemini-1.5-flash',
-            contents=prompt
-        )
+        response = ai_client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
         result = response.text.strip()
-        return result if result else "Не удалось сформировать однозначный вердикт по отзывам."
+        return result if result else "Не удалось сформировать однозначный вердикт."
     except Exception as e: 
         print(f"Ошибка Gemini API: {e}")
         return "Не удалось сгенерировать вердикт ИИ."
@@ -214,8 +231,7 @@ def get_main_keyboard():
     return kb
 
 def check_and_increment_limit(user_obj, chat_id):
-    if check_moderator(user_obj) or chat_id in premium_users: 
-        return True
+    if check_moderator(user_obj) or chat_id in premium_users: return True
     max_limit = user_limits.get(chat_id, 3)
     used_today = user_usage.get(chat_id, 0)
     if used_today >= max_limit: return False
@@ -238,14 +254,12 @@ def start_cmd(m):
     if len(args) > 1 and args[1].startswith('ref'):
         try:
             referrer_id = int(args[1].replace('ref', ''))
-            if referrer_id == m.chat.id:
-                bot.send_message(m.chat.id, "⚠️ Вы не можете активировать собственную реферальную ссылку.")
-            else:
+            if referrer_id != m.chat.id:
                 if referrer_id not in referrals: referrals[referrer_id] = []
                 if m.chat.id not in referrals[referrer_id]:
                     referrals[referrer_id].append(m.chat.id)
                     user_limits[referrer_id] = user_limits.get(referrer_id, 3) + 2
-                    try: bot.send_message(referrer_id, f"🎉 Новый реферал! Ваш суточный лимит увеличен на +2 запроса.")
+                    try: bot.send_message(referrer_id, f"🎉 Новый реферал! Лимит увеличен на +2 запроса.")
                     except: pass
         except: pass
 
@@ -281,11 +295,7 @@ def show_ref(m):
     bot_info = bot.get_me()
     ref_link = f"https://t.me/{bot_info.username}?start=ref{m.chat.id}"
     invited = len(referrals.get(m.chat.id, []))
-    
-    if check_moderator(m.from_user) or m.chat.id in premium_users:
-        status_text = "<b>∞ Безлимит (Модератор/Премиум)</b>"
-    else:
-        status_text = f"<b>{user_usage.get(m.chat.id, 0)} из {user_limits.get(m.chat.id, 3)} запросов сегодня</b>"
+    status_text = "<b>∞ Безлимит</b>" if (check_moderator(m.from_user) or m.chat.id in premium_users) else f"<b>{user_usage.get(m.chat.id, 0)} из {user_limits.get(m.chat.id, 3)} запросов сегодня</b>"
 
     text = (
         "👥 <b>Реферальная система и Лимиты</b>\n\n"
@@ -304,35 +314,16 @@ def show_premium(m):
     kb = types.InlineKeyboardMarkup()
     
     if check_moderator(m.from_user) or cid in premium_users:
-        if check_moderator(m.from_user):
-            sub_info = "👑 <b>Статус: Вечный безлимит (Разработчик)</b>\n"
-            days_left_text = "Дней до конца: <b>∞</b>"
-        else:
-            start_date = premium_dates.get(cid, datetime.datetime.now())
-            end_date = start_date + datetime.timedelta(days=30)
-            days_left = (end_date - datetime.datetime.now()).days
-            days_left = max(0, days_left)
-            
-            sub_info = f"⭐ <b>Статус: Подписка Активна</b>\n" \
-                       f"📅 Дата оформления: <code>{start_date.strftime('%d.%m.%Y %H:%M')}</code>\n"
-            days_left_text = f"⏳ Дней до конца подписки: <b>{days_left} дней</b>"
-
-        # Кнопка тестового сброса активной подписки для отладки
+        sub_text = "👑 <b>Статус: Вечный безлимит</b>\n" if check_moderator(m.from_user) else f"⭐ <b>Статус: Подписка Активна</b>\n📅 Дата: <code>{premium_dates.get(cid, datetime.datetime.now()).strftime('%d.%m.%Y')}</code>\n"
         kb.add(types.InlineKeyboardButton("🛠 Сбросить мою подписку (Тест)", callback_data="test_drop_my_sub"))
-
-        text = (
-            f"{sub_info}"
-            f"📊 Потрачено лимитов (всего поисков): <b>{total_searches} запросов</b>\n"
-            f"{days_left_text}\n\n"
-            f"🚀 Любые суточные ограничения для тебя полностью сняты!"
-        )
+        text = f"{sub_text}📊 Потрачено: <b>{total_searches} запросов</b>\n\n🚀 Суточные лимиты полностью сняты!"
         bot.send_message(cid, text, reply_markup=kb, parse_mode="HTML")
     else:
-        kb.add(types.InlineKeyboardButton("⭐️ Оформить Premium за 2 Звезды", callback_data="buy_premium"))
+        kb.add(types.InlineKeyboardButton("⭐️ Оформить Premium за 25 Звезд", callback_data="buy_premium"))
         text = (
             "⭐ <b>Полный Безлимит за Telegram Stars</b>\n\n"
             "Подписка полностью отключает суточные лимиты, открывает бесконечный поиск релизов и моментальный ИИ-анализ комментариев.\n\n"
-            f"📈 Твоя текущая статистика поисков: <b>{total_searches} запросов</b> за все время.\n"
+            f"📈 Твоя статистика поисков: <b>{total_searches} запросов</b>.\n"
         )
         bot.send_message(cid, text, reply_markup=kb, parse_mode="HTML")
 
@@ -343,9 +334,7 @@ def handle_text(m):
         bot.send_message(m.chat.id, "⚠️ Суточный лимит исчерпан. Расширь его через друзей или оформи подписку.")
         return
 
-    # Чистим прошлые результаты из чата перед выводом новых
     clear_previous_interface_messages(m.chat.id)
-
     total_requests_count += 1
     user_total_searches[m.chat.id] = user_total_searches.get(m.chat.id, 0) + 1
     
@@ -376,10 +365,7 @@ def callbacks(c):
     bot.answer_callback_query(c.id)
     
     if c.data.startswith('c'):
-        if not check_and_increment_limit(c.from_user, cid):
-            bot.send_message(cid, "⚠️ Лимит исчерпан.")
-            return        
-        
+        if not check_and_increment_limit(c.from_user, cid): return        
         clear_previous_interface_messages(cid)
         results = parse_rutracker(query_text=None, category_id=c.data[1:])
         if results:
@@ -387,15 +373,11 @@ def callbacks(c):
             for item in results:
                 kb = types.InlineKeyboardMarkup()
                 kb.add(types.InlineKeyboardButton("📄 Открыть карточку релиза", callback_data=f"v{item['tid']}"))
-                safe_title = clean_html(item['title'])
-                safe_size = clean_html(item['size'])
-                text = f"▪️ <b>{safe_title}</b>\n└ 💼 Вес: <code>{safe_size}</code>"
+                text = f"▪️ <b>{clean_html(item['title'])}</b>\n└ 💼 Вес: <code>{clean_html(item['size'])}</code>"
                 try: 
                     msg = bot.send_message(cid, text, reply_markup=kb, parse_mode="HTML")
                     register_msg_for_deletion(cid, msg.message_id)
                 except: pass
-        else:
-            bot.send_message(cid, "❌ В этой категории ничего не найдено.")
 
     elif c.data.startswith('d'):
         tid = c.data[1:]
@@ -404,20 +386,14 @@ def callbacks(c):
             f = io.BytesIO(r.content); f.name = f"{tid}.torrent"
             bot.send_document(cid, f, caption="✅ Файл готов.")
             clear_previous_interface_messages(cid)
-        except: 
-            bot.send_message(cid, "❌ Ошибка загрузки торрента.")
+        except: bot.send_message(cid, "❌ Ошибка загрузки торрента.")
     
     elif c.data.startswith('v'):
-        if not check_and_increment_limit(c.from_user, cid):
-            bot.send_message(cid, "⚠️ Лимит исчерпан для просмотра карточек.")
-            return
-
+        if not check_and_increment_limit(c.from_user, cid): return
         tid = c.data[1:]
-        # Удаляем всю пачку сообщений поиска из чата
         clear_previous_interface_messages(cid)
 
         wait_msg = bot.send_message(cid, "⏳ <i>Загружаю карточку релиза и генерирую отзыв ИИ...</i>", parse_mode="HTML")
-        
         img_url, description, comments = parse_topic_details(tid)
         summary = get_ai_summary(comments)
         
@@ -426,68 +402,39 @@ def callbacks(c):
         
         kb = types.InlineKeyboardMarkup(row_width=2)
         kb.add(types.InlineKeyboardButton("📥 Скачать .torrent", callback_data=f"d{tid}"))
-        kb.add(
-            types.InlineKeyboardButton("👥 Рефка", callback_data="inline_ref"),
-            types.InlineKeyboardButton("⭐️ Подписка", callback_data="inline_sub")
-        )
+        kb.add(types.InlineKeyboardButton("👥 Рефка", callback_data="inline_ref"), types.InlineKeyboardButton("⭐️ Подписка", callback_data="inline_sub"))
         
-        title_text = "Детали релиза"
-        try:
-            lines = c.message.text.split('\n')
-            if lines: title_text = lines[0].replace('▪️ ', '')
-        except: pass
-                    
-        safe_title = clean_html(title_text)
-        safe_desc = clean_html(description)
-        safe_summary = clean_html(summary)
-        
-        card_text = (
-            f"📦 <b>{safe_title}</b>\n\n"
-            f"📋 <b>Описание:</b>\n<i>{safe_desc}</i>\n\n"
-            f"🤖 <b>Вердикт ИИ по комментариям:</b>\n"
-            f"<blockquote>{safe_summary}</blockquote>"
-        )
+        title_text = clean_html(c.message.text.split('\n')[0].replace('▪️ ', '')) if c.message.text else "Детали релиза"
+        card_text = f"📦 <b>{title_text}</b>\n\n📋 <b>Детали релиза:</b>\n<i>{clean_html(description)}</i>\n\n🤖 <b>Вердикт ИИ по комментариям:</b>\n<blockquote>{clean_html(summary)}</blockquote>"
         
         try:
             if img_url and (img_url.startswith('http://') or img_url.startswith('https://')):
                 msg = bot.send_photo(cid, img_url, caption=card_text[:1024], reply_markup=kb, parse_mode="HTML")
-            else:
-                msg = bot.send_message(cid, card_text, reply_markup=kb, parse_mode="HTML")
-        except:
-            msg = bot.send_message(cid, card_text, reply_markup=kb, parse_mode="HTML")
+            else: msg = bot.send_message(cid, card_text, reply_markup=kb, parse_mode="HTML")
+        except: msg = bot.send_message(cid, card_text, reply_markup=kb, parse_mode="HTML")
             
-        if msg:
-            register_msg_for_deletion(cid, msg.message_id)
+        if msg: register_msg_for_deletion(cid, msg.message_id)
             
     elif c.data in ['buy_premium', 'inline_sub']:
         if cid in premium_users:
             bot.send_message(cid, "✅ У вас уже оформлен безлимитный доступ.")
             return
-            
-        stars_amount = 2 
+        # Обновленная стоимость подписки — 25 звёзд
+        stars_amount = 25 
         prices = [types.LabeledPrice(label='Премиум подписка (1 месяц)', amount=stars_amount)]
-        
         try:
             bot.send_invoice(
-                chat_id=cid,
-                title="⭐ Безлимитный Premium",
+                chat_id=cid, title="⭐ Безлимитный Premium",
                 description="Полное снятие ограничений на поиск торрентов и генерацию вердиктов ИИ на 30 дней.",
-                invoice_payload="monthly_premium_stars",
-                provider_token="XTR_TEST", 
-                currency="XTR",    
-                prices=prices,
-                start_parameter="premium-stars-sub"
+                invoice_payload="monthly_premium_stars", provider_token="", currency="XTR", prices=prices, start_parameter="premium-stars-sub"
             )
-        except Exception as e:
-            bot.send_message(cid, f"❌ Ошибка платежной системы Stars: {e}")
+        except Exception as e: bot.send_message(cid, f"❌ Ошибка платежной системы Stars: {e}")
         
     elif c.data == 'inline_ref':
         bot_info = bot.get_me()
-        ref_link = f"https://t.me/{bot_info.username}?start=ref{cid}"
-        bot.send_message(cid, f"🔗 <b>Ваша реферальная ссылка:</b>\n<code>{ref_link}</code>\n\nПоделитесь ей, чтобы увеличить лимиты!", parse_mode="HTML")
+        bot.send_message(cid, f"🔗 <b>Ваша реферальная ссылка:</b>\n<code>https://t.me/{bot_info.username}?start=ref{cid}</code>", parse_mode="HTML")
 
     elif c.data == "test_drop_my_sub":
-        # Логика удаления подписки для тестов
         if cid in premium_users: premium_users.remove(cid)
         if cid in premium_dates: del premium_dates[cid]
         user_usage[cid] = 0 
@@ -501,19 +448,12 @@ def process_stars_pre_checkout(pre_checkout_query):
 @bot.message_handler(content_types=['successful_payment'])
 def stars_payment_success(m):
     global premium_users, premium_dates
-    payload = m.successful_payment.invoice_payload
-    if payload == "monthly_premium_stars":
+    if m.successful_payment.invoice_payload == "monthly_premium_stars":
         premium_users.add(m.chat.id)
         premium_dates[m.chat.id] = datetime.datetime.now()
-        
-        text = (
-            "🎉 <b>Тестовая оплата Звездами успешно проведена!</b>\n\n"
-            "Ваш аккаунт переведен в статус <b>Premium</b> в системе Torrent Archive на 30 дней. "
-            "Лимиты полностью отключены. Проверить статус можно в меню «Безлимитный доступ»."
-        )
-        bot.send_message(m.chat.id, text, reply_markup=get_main_keyboard(), parse_mode="HTML")
+        bot.send_message(m.chat.id, "🎉 <b>Оплата Звездами успешно проведена!</b>\n\nВаш аккаунт переведен в статус <b>Premium</b> на 30 дней.", reply_markup=get_main_keyboard(), parse_mode="HTML")
 
 if __name__ == '__main__':
     if login():
-        print("🚀 Torrent Bot запущен. Сессия Rutracker активна!")
+        print("🚀 Torrent Bot обновлен: парсинг топика исправлен!")
         bot.polling(none_stop=True)
