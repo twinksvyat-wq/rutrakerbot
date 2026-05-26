@@ -265,14 +265,14 @@ def parse_rutracker(query_text, category_id=None, retry=True):
         return []
 
 # ==========================================
-# ИСПРАВЛЕННЫЙ ПАРСЕР СТРАНИЦЫ РАЗДАЧИ (С ЛОКАЛИЗАЦИЕЙ FIELDS)
+# ИСПРАВЛЕННЫЙ ПАРСЕР СТРАНИЦЫ РАЗДАЧИ
 # ==========================================
-def parse_topic_details(tid, lang='ru'):
+def parse_topic_details(tid):
     try:
         url = f"{BASE_URL}/forum/viewtopic.php?t={tid}"
         resp = r_session.get(url, timeout=20)
         if resp.status_code != 200:
-            return None, ("Не удалось загрузить страницу топика." if lang == 'ru' else "Failed to load topic page."), []
+            return None, "Не удалось загрузить страницу топика.", []
             
         resp.encoding = 'windows-1251'
         soup = BeautifulSoup(resp.text, 'html.parser')
@@ -301,65 +301,49 @@ def parse_topic_details(tid, lang='ru'):
             
             # Сбор структурированных характеристик
             details = {}
+            
+            # Находим точный системный вес раздачи из разметки Rutracker (надёжный способ)
+            sys_size_tag = soup.find(id='tor-size-h')
+            if sys_size_tag:
+                details['вес'] = sys_size_tag.get_text(strip=True)
+
+            # Если через ID не нашлось, ищем по регулярке системной строки «Размер раздачи»
+            if 'вес' not in details:
+                size_match = re.search(r'Размер раздачи:\s*([0-9.,]+\s*(?:GB|MB|KB|ГБ|МБ|КБ|TB|ТБ)[^\n<]*)', soup.get_text(), re.IGNORECASE)
+                if size_match and "совпадающие" not in size_match.group(1).lower():
+                    details['вес'] = size_match.group(1).strip()[:50]
+
             for line in lines:
                 line_lower = line.lower()
                 if 'жанр' in line_lower and 'жанр' not in details:
-                    val = line.split(':', 1)[-1].strip()
-                    if val: details['жанр'] = val
+                    details['жанр'] = line.split(':', 1)[-1].strip()
                 elif ('версия' in line_lower or 'v/' in line_lower or 'update' in line_lower) and 'версия' not in details:
-                    val = line.split(':', 1)[-1].strip()
-                    if val: details['версия'] = val
+                    details['версия'] = line.split(':', 1)[-1].strip()
                 elif ('размер' in line_lower or 'вес' in line_lower) and 'вес' not in details:
-                    val = line.split(':', 1)[-1].strip()
-                    if val: details['вес'] = val
+                    possible_weight = line.split(':', 1)[-1].strip()
+                    # Исключаем попадание строк «Совпадающие по размеру файлы» в описание веса
+                    if "совпадающие" not in possible_weight.lower() and "файлы" not in possible_weight.lower():
+                        details['вес'] = possible_weight
                 elif 'язык' in line_lower and 'язык' not in details:
-                    val = line.split(':', 1)[-1].strip()
-                    if val: details['язык'] = val
+                    details['язык'] = line.split(':', 1)[-1].strip()
                 elif ('таблетка' in line_lower or 'лекарство' in line_lower or 'crack' in line_lower) and 'таблетка' not in details:
-                    val = line.split(':', 1)[-1].strip()
-                    if val: details['таблетка'] = val
+                    details['таблетка'] = line.split(':', 1)[-1].strip()
                 elif ('разработчик' in line_lower or 'издатель' in line_lower) and 'разработчик' not in details:
-                    val = line.split(':', 1)[-1].strip()
-                    if val: details['разработчик'] = val
+                    details['разработчик'] = line.split(':', 1)[-1].strip()
 
-            # Если вес не нашелся во внутреннем тексте или пустой, вытягиваем его из системной таблицы трекера
-            if 'вес' not in details or not details['вес'].strip():
+            # Крайний случай общего глобального поиска веса, если всё остальное не дало результатов
+            if 'вес' not in details:
                 size_match = re.search(r'Размер(?:\s+раздачи)?:\s*([0-9.,]+\s*(?:GB|MB|KB|ГБ|МБ|КБ|TB|ТБ)[^\n<]*)', soup.get_text(), re.IGNORECASE)
-                if size_match:
+                if size_match and "совпадающие" not in size_match.group(1).lower():
                     details['вес'] = size_match.group(1).strip()[:50]
 
-            # Динамические языковые метки полей карточки
-            labels = {
-                'ru': {
-                    'genre': '🎮 <b>Жанр:</b>',
-                    'version': 'ℹ️ <b>Версия:</b>',
-                    'weight': '💼 <b>Размер / Вес:</b>',
-                    'lang': '🗣 <b>Язык:</b>',
-                    'crack': '🏴‍☠️ <b>Таблетка:</b>',
-                    'dev': '👨‍💻 <b>Разработчик:</b>',
-                    'fallback': 'Техническая сводка доступна непосредственно внутри загружаемого торрент-файла.',
-                    'not_found': 'Описание релиза не найдено или скрыто трекером.'
-                },
-                'en': {
-                    'genre': '🎮 <b>Genre:</b>',
-                    'version': 'ℹ️ <b>Version:</b>',
-                    'weight': '💼 <b>Size / Weight:</b>',
-                    'lang': '🗣 <b>Language:</b>',
-                    'crack': '🏴‍☠️ <b>Crack:</b>',
-                    'dev': '👨‍💻 <b>Developer:</b>',
-                    'fallback': 'Technical summary is available directly inside the downloaded torrent file.',
-                    'not_found': 'Release description not found or hidden by the tracker.'
-                }
-            }
-            lbl = labels.get(lang, labels['ru'])
-
             info_blocks = []
-            if details.get('жанр'): info_blocks.append(f"{lbl['genre']} {details['жанр']}")
-            if details.get('версия'): info_blocks.append(f"{lbl['version']} {details['версия']}")
-            if details.get('вес'): info_blocks.append(f"{lbl['weight']} {details['вес']}")
-            if details.get('язык'): info_blocks.append(f"{lbl['lang']} {details['язык']}")
-            if details.get('таблетка'): info_blocks.append(f"{lbl['crack']} {details['таблетка']}")
-            if details.get('разработчик'): info_blocks.append(f"{lbl['dev']} {details['разработчик']}")
+            if 'жанр' in details: info_blocks.append(f"🎮 <b>Жанр:</b> {details['жанр']}")
+            if 'версия' in details: info_blocks.append(f"ℹ️ <b>Версия:</b> {details['версия']}")
+            if 'вес' in details: info_blocks.append(f"💼 <b>Размер / Вес:</b> {details['вес']}")
+            if 'язык' in details: info_blocks.append(f"🗣 <b>Язык:</b> {details['язык']}")
+            if 'таблетка' in details: info_blocks.append(f"🏴‍☠️ <b>Таблетка:</b> {details['таблетка']}")
+            if 'разработчик' in details: info_blocks.append(f"👨‍💻 <b>Разработчик:</b> {details['разработчик']}")
 
             # Если структурированных параметров мало — берем текстовое превью, сохраняя найденные блоки
             if len(info_blocks) < 2:
@@ -374,11 +358,11 @@ def parse_topic_details(tid, lang='ru'):
                 if fallback_lines:
                     description_text = header_part + "\n".join(fallback_lines)
                 else:
-                    description_text = header_part + lbl['fallback']
+                    description_text = header_part + "Техническая сводка доступна непосредственно внутри загружаемого торрент-файла."
             else:
                 description_text = "\n".join(info_blocks)
         else:
-            description_text = lbl['not_found']
+            description_text = "Описание релиза не найдено или скрыто трекером."
 
         # Сбор комментариев для ИИ
         comments = []
@@ -401,14 +385,17 @@ def parse_topic_details(tid, lang='ru'):
         return img_url, description_text, comments
     except Exception as e:
         print(f"❌ Ошибка парсера страниц: {e}")
-        return None, ("Ошибка обработки текстового контента страницы." if lang == 'ru' else "Error processing page text."), []
+        return None, "Ошибка обработки текстового контента страницы.", []
 
 # ==========================================
-# ИНТЕГРАЦИЯ С GEMINI AI API
+# ИНТЕГРАЦИЯ С GEMINI AI API (ЛОКАЛИЗОВАННАЯ)
 # ==========================================
-def get_ai_summary(comments):
+def get_ai_summary(comments, lang='ru'):
     if not ai_client or not comments:
-        return "Отзывы к релизу отсутствуют или в ветке пока нет обсуждений."
+        if lang == 'en':
+            return "🛠 Review analysis is under development or no discussions found."
+        return "🛠 Анализ отзывов находится в разработке или обсуждения отсутствуют."
+        
     raw_text = "\n".join([f"- {c}" for c in comments])
     prompt = (
         "Ты — ИИ-модератор торрент-трекера. Оцени качество релиза по комментариям пользователей.\n"
@@ -419,9 +406,9 @@ def get_ai_summary(comments):
     try:
         response = ai_client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
         if response.text: return response.text.strip()
-        return "Не удалось проанализировать отзывы."
+        return "Не удалось проанализировать отзывы." if lang == 'ru' else "Failed to analyze reviews."
     except Exception: 
-        return "Ошибка генерации вердикта ИИ."
+        return "Ошибка генерации вердикта ИИ." if lang == 'ru' else "AI verdict generation error."
 
 # ==========================================
 # ГЕНЕРАТОРЫ ИНТЕРФЕЙСА И ПАГИНАЦИИ
@@ -700,8 +687,8 @@ def callbacks(c):
         clear_previous_interface_messages(cid)
 
         wait_msg = bot.send_message(cid, STRINGS[lang]['card_loading'], parse_mode="HTML")
-        img_url, description, comments = parse_topic_details(tid, lang)
-        summary = get_ai_summary(comments)
+        img_url, description, comments = parse_topic_details(tid)
+        summary = get_ai_summary(comments, lang)
         
         try: bot.delete_message(cid, wait_msg.message_id)
         except: pass
