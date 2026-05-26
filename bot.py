@@ -4,13 +4,14 @@ from telebot import types
 from google import genai
 import urllib.parse
 
+# Настройка секретов и ключей
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 R_LOGIN = os.environ.get("RUTRACKER_LOGIN")
 R_PASSWORD = os.environ.get("RUTRACKER_PASSWORD")
 GEMINI_KEY = os.environ.get("GEMINI_KEY")
 
 if not all([TOKEN, R_LOGIN, R_PASSWORD]):
-    print("❌ ОШИБКА: Не настроены секреты GitHub!"); exit(1)
+    print("❌ ОШИБКА: Не настроены обязательные секреты (Токен или логин/пароль к трекеру)!"); exit(1)
 
 if GEMINI_KEY:
     ai_client = genai.Client(api_key=GEMINI_KEY)
@@ -19,7 +20,9 @@ else:
 
 bot = telebot.TeleBot(TOKEN)
 r_session = requests.Session()
-r_session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'})
+r_session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+})
 
 DOMAINS = ["https://rutracker.net", "https://rutracker.org", "https://rutracker.nl"]
 BASE_URL = DOMAINS[0]
@@ -27,6 +30,7 @@ BASE_URL = DOMAINS[0]
 CAT_MAP = {"🎬 Кино": "7", "📺 Сериалы": "189", "🎮 Игры": "9", "📚 Книги": "10"}
 MODERATORS = ["Ki_l1"]
 
+# Глобальные хранилища данных
 total_users = set()
 total_requests_count = 0
 referrals = {}      
@@ -37,18 +41,17 @@ premium_users = set()
 premium_dates = {}         
 user_total_searches = {}   
 
-# ХРАНИЛИЩЕ ДЛЯ АВТОУДАЛЕНИЯ СООБЩЕНИЙ
-# Структура: { chat_id: [id_сообщения1, id_сообщения2, ...] }
+# Хранилище ID сообщений для пакетной очистки интерфейса поиска
 user_messages_to_delete = {}
 
 def register_msg_for_deletion(chat_id, message_id):
-    """Регистрирует сообщение, которое нужно будет удалить при следующем действии"""
+    """Регистрирует отправленное ботом сообщение для последующего автоматического удаления"""
     if chat_id not in user_messages_to_delete:
         user_messages_to_delete[chat_id] = []
     user_messages_to_delete[chat_id].append(message_id)
 
 def clear_previous_interface_messages(chat_id):
-    """Удаляет абсолютно все зарегистрированные ранее сообщения бота для этого юзера"""
+    """Удаляет абсолютно все ранее зарегистрированные сообщения результатов поиска для чистоты чата"""
     if chat_id in user_messages_to_delete:
         for msg_id in user_messages_to_delete[chat_id]:
             try:
@@ -64,8 +67,10 @@ def login():
             data = {'login_username': R_LOGIN, 'login_password': R_PASSWORD, 'login': 'Вход'}
             res = r_session.post(f"{domain}/forum/login.php", data=data, timeout=15)
             if "login_username" not in res.text and res.status_code == 200:
-                BASE_URL = domain; return True
-        except: pass
+                BASE_URL = domain
+                return True
+        except: 
+            pass
     return False
 
 def clean_html(text):
@@ -107,45 +112,76 @@ def parse_rutracker(query_text, category_id=None):
         unique = []
         seen = set()
         for r in results:
-            if r['tid'] not in seen: unique.append(r); seen.add(r['tid'])
+            if r['tid'] not in seen: 
+                unique.append(r)
+                seen.add(r['tid'])
         return unique[:10]
-    except: return []
+    except: 
+        return []
 
 def parse_topic_details(tid):
+    """Обновленный и устойчивый к разметке парсер описания, картинок и отзывов"""
     try:
-        resp = r_session.get(f"{BASE_URL}/forum/viewtopic.php?t={tid}", timeout=15)
+        url = f"{BASE_URL}/forum/viewtopic.php?t={tid}"
+        resp = r_session.get(url, timeout=20)
+        
+        if resp.status_code != 200:
+            return None, "Не удалось загрузить страницу топика (Ошибка соединения).", []
+            
         resp.encoding = 'windows-1251'
         soup = BeautifulSoup(resp.text, 'html.parser')
         
+        # 1. Поиск постера/картинки (через var class="postImg")
         img_url = None
-        main_post = soup.find('span', class_='postbody')
-        if main_post:
-            img_tag = main_post.find('var', class_='postImg')
-            if img_tag and img_tag.get('title'):
-                img_url = img_tag['title']
-        
-        description = "Описание релиза недоступно."
-        if main_post:
-            lines = [line.strip() for line in main_post.get_text().split('\n') if line.strip()]
-            valid_lines = [l for l in lines if not l.startswith('[') and len(l) > 10]
-            if valid_lines:
-                description = "\n".join(valid_lines[:3])[:350] + "..."
+        img_tag = soup.find('var', class_='postImg')
+        if img_tag and img_tag.get('title'):
+            img_url = img_tag['title']
 
+        # 2. Извлечение описания раздачи
+        description = "Описание релиза недоступно."
+        main_post = soup.find('span', class_='postbody')
+        
+        if main_post:
+            post_copy = BeautifulSoup(str(main_post), 'html.parser')
+            # Вырезаем технические таблицы, спойлеры и скриншоты, чтобы не засорять описание
+            for r_tag in post_copy.find_all(['div', 'table'], class_=['sp-wrap', 'sp-body', 'sp-head', 'forumline']):
+                r_tag.decompose()
+                
+            lines = [line.strip() for line in post_copy.get_text().split('\n') if line.strip()]
+            valid_desc_lines = [l for l in lines if len(l) > 20 and not l.startswith('[')]
+            
+            if valid_desc_lines:
+                description = "\n".join(valid_desc_lines[:4])[:400] + "..."
+            else:
+                clean_lines = [l for l in lines if not l.startswith('[')]
+                if clean_lines:
+                    description = "\n".join(clean_lines[:3])[:350] + "..."
+
+        # 3. Извлечение комментариев пользователей (ячейки td с классом message)
         comments = []
         posts = soup.find_all('td', class_='message')
-        for post in posts[1:]:
-            for quote in post.find_all('table', class_='forumline'):
-                quote.decompose()
-            
-            text = post.get_text(strip=True)
-            if text and len(text) > 15:
-                clean_text = " ".join(text.split())
-                comments.append(clean_text[:250])
-            if len(comments) >= 15: break
-            
+        
+        if len(posts) > 1:
+            for post in posts[1:]:  # Пропускаем нулевой пост (шапку темы)
+                # Точечно вырезаем цитаты, чтобы ИИ не читал повторы
+                for quote in post.find_all('table', class_='forumline'):
+                    quote.decompose()
+                for spoiler in post.find_all('div', class_='sp-wrap'):
+                    spoiler.decompose()
+                    
+                text = post.get_text(strip=True)
+                if text and len(text) > 15:
+                    clean_comment = " ".join(text.split())
+                    comments.append(clean_comment[:300])
+                    
+                if len(comments) >= 12: 
+                    break
+
         return img_url, description, comments
-    except:
-        return None, "Не удалось загрузить данные топика.", []
+        
+    except Exception as e:
+        print(f"❌ Ошибка парсинга топика {tid}: {e}")
+        return None, "Произошла внутренняя ошибка при разборе страницы топика.", []
 
 def get_ai_summary(comments):
     if not ai_client or not comments:
@@ -193,7 +229,6 @@ def start_cmd(m):
     if m.chat.id not in user_usage: user_usage[m.chat.id] = 0
     if m.chat.id not in user_total_searches: user_total_searches[m.chat.id] = 0
     
-    # При старте/сбросе очищаем старые висящие инлайн-кнопки бота
     clear_previous_interface_messages(m.chat.id)
     
     try: bot.set_chat_menu_button(m.chat.id, types.MenuButtonDefault())
@@ -266,6 +301,7 @@ def show_premium(m):
     clear_previous_interface_messages(m.chat.id)
     cid = m.chat.id
     total_searches = user_total_searches.get(cid, 0)
+    kb = types.InlineKeyboardMarkup()
     
     if check_moderator(m.from_user) or cid in premium_users:
         if check_moderator(m.from_user):
@@ -281,9 +317,8 @@ def show_premium(m):
                        f"📅 Дата оформления: <code>{start_date.strftime('%d.%m.%Y %H:%M')}</code>\n"
             days_left_text = f"⏳ Дней до конца подписки: <b>{days_left} дней</b>"
 
-        kb = types.InlineKeyboardMarkup()
-        if check_moderator(m.from_user):
-            kb.add(types.InlineKeyboardButton("🚫 Сбросить все подписки (Админ)", callback_data="admin_drop_subs"))
+        # Кнопка тестового сброса активной подписки для отладки
+        kb.add(types.InlineKeyboardButton("🛠 Сбросить мою подписку (Тест)", callback_data="test_drop_my_sub"))
 
         text = (
             f"{sub_info}"
@@ -291,9 +326,8 @@ def show_premium(m):
             f"{days_left_text}\n\n"
             f"🚀 Любые суточные ограничения для тебя полностью сняты!"
         )
-        bot.send_message(cid, text, reply_markup=kb if check_moderator(m.from_user) else get_main_keyboard(), parse_mode="HTML")
+        bot.send_message(cid, text, reply_markup=kb, parse_mode="HTML")
     else:
-        kb = types.InlineKeyboardMarkup()
         kb.add(types.InlineKeyboardButton("⭐️ Оформить Premium за 2 Звезды", callback_data="buy_premium"))
         text = (
             "⭐ <b>Полный Безлимит за Telegram Stars</b>\n\n"
@@ -309,7 +343,7 @@ def handle_text(m):
         bot.send_message(m.chat.id, "⚠️ Суточный лимит исчерпан. Расширь его через друзей или оформи подписку.")
         return
 
-    # Перед выводом новых результатов поиска чистим старые результаты
+    # Чистим прошлые результаты из чата перед выводом новых
     clear_previous_interface_messages(m.chat.id)
 
     total_requests_count += 1
@@ -330,7 +364,6 @@ def handle_text(m):
             text = f"▪️ <b>{safe_title}</b>\n└ 💼 Вес: <code>{safe_size}</code>"
             try:
                 msg = bot.send_message(m.chat.id, text, reply_markup=kb, parse_mode="HTML")
-                # Регистрируем КАЖДЫЙ выведенный результат поиска для удаления
                 register_msg_for_deletion(m.chat.id, msg.message_id)
             except: pass
     else:
@@ -347,9 +380,7 @@ def callbacks(c):
             bot.send_message(cid, "⚠️ Лимит исчерпан.")
             return        
         
-        # Юзер выбрал категорию -> удаляем меню выбора категорий
         clear_previous_interface_messages(cid)
-        
         results = parse_rutracker(query_text=None, category_id=c.data[1:])
         if results:
             user_total_searches[cid] = user_total_searches.get(cid, 0) + 1
@@ -372,10 +403,9 @@ def callbacks(c):
             r = r_session.get(f"{BASE_URL}/forum/dl.php?t={tid}", headers={'Referer': f"{BASE_URL}/forum/viewtopic.php?t={tid}"}, timeout=20)
             f = io.BytesIO(r.content); f.name = f"{tid}.torrent"
             bot.send_document(cid, f, caption="✅ Файл готов.")
-            
-            # Файл успешно скачан -> убираем карточку раздачи, чтобы освободить экран
             clear_previous_interface_messages(cid)
-        except: bot.send_message(cid, "❌ Ошибка загрузки торрента.")
+        except: 
+            bot.send_message(cid, "❌ Ошибка загрузки торрента.")
     
     elif c.data.startswith('v'):
         if not check_and_increment_limit(c.from_user, cid):
@@ -383,9 +413,7 @@ def callbacks(c):
             return
 
         tid = c.data[1:]
-        
-        # КЛЮЧЕВОЙ МОМЕНТ: Юзер нажал на карточку одного из релизов. 
-        # Удаляем ВЕСЬ список найденных результатов поиска из чата!
+        # Удаляем всю пачку сообщений поиска из чата
         clear_previous_interface_messages(cid)
 
         wait_msg = bot.send_message(cid, "⏳ <i>Загружаю карточку релиза и генерирую отзыв ИИ...</i>", parse_mode="HTML")
@@ -428,7 +456,6 @@ def callbacks(c):
         except:
             msg = bot.send_message(cid, card_text, reply_markup=kb, parse_mode="HTML")
             
-        # Заносим саму карточку в реестр (чтобы её можно было удалить при скачивании или новом поиске)
         if msg:
             register_msg_for_deletion(cid, msg.message_id)
             
@@ -459,13 +486,13 @@ def callbacks(c):
         ref_link = f"https://t.me/{bot_info.username}?start=ref{cid}"
         bot.send_message(cid, f"🔗 <b>Ваша реферальная ссылка:</b>\n<code>{ref_link}</code>\n\nПоделитесь ей, чтобы увеличить лимиты!", parse_mode="HTML")
 
-    elif c.data == "admin_drop_subs":
-        if check_moderator(c.from_user):
-            premium_users.clear()
-            premium_dates.clear()
-            bot.send_message(cid, "🗑 <b>База активных подписок полностью очищена админом.</b>", parse_mode="HTML")
-        else:
-            bot.send_message(cid, "❌ Отказано в доступе.")
+    elif c.data == "test_drop_my_sub":
+        # Логика удаления подписки для тестов
+        if cid in premium_users: premium_users.remove(cid)
+        if cid in premium_dates: del premium_dates[cid]
+        user_usage[cid] = 0 
+        bot.send_message(cid, "🗑 <b>Твоя подписка успешно удалена для тестирования!</b>", parse_mode="HTML")
+        show_premium(c.message)
 
 @bot.pre_checkout_query_handler(func=lambda query: True)
 def process_stars_pre_checkout(pre_checkout_query):
@@ -488,5 +515,5 @@ def stars_payment_success(m):
 
 if __name__ == '__main__':
     if login():
-        print("🚀 Сборщик ID внедрен: Теперь бот подчищает все сообщения результатов поиска разом!")
+        print("🚀 Torrent Bot запущен. Сессия Rutracker активна!")
         bot.polling(none_stop=True)
