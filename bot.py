@@ -94,7 +94,10 @@ STRINGS = {
         'card_err': "Не удалось загрузить страницу топика.",
         'parse_err': "Ошибка обработки контента страницы.",
         'card_btn': "📄 Открыть карточку релиза",
-        'weight': "Вес"
+        'weight': "Вес",
+        'prev_btn': "⬅️ Назад",
+        'next_btn': "Вперед ➡️",
+        'search_header': "🔍 <b>Результаты поиска (Страница {current} из {total}):</b>\nВыбери релиз для открытия карточки:"
     },
     'en': {
         'welcome': "🛸 <b>Torrent Archive is active</b>\n\nI index releases and provide files directly bypassing blocks.\n\n⚡️ <i>Use the bottom menu to search.</i>",
@@ -122,7 +125,10 @@ STRINGS = {
         'card_err': "Failed to load topic page.",
         'parse_err': "Error processing page content.",
         'card_btn': "📄 Open release card",
-        'weight': "Weight"
+        'weight': "Weight",
+        'prev_btn': "⬅️ Back",
+        'next_btn': "Forward ➡️",
+        'search_header': "🔍 <b>Search Results (Page {current} of {total}):</b>\nSelect a release to view details:"
     }
 }
 
@@ -141,6 +147,7 @@ premium_dates = {}
 user_total_searches = {}   
 
 user_messages_to_delete = {}
+user_searches = {}  
 
 # ==========================================
 # СИСТЕМА УПРАВЛЕНИЯ ИНТЕРФЕЙСОМ (ОЧИСТКА)
@@ -196,7 +203,7 @@ def check_moderator(user_obj):
     return False
 
 # ==========================================
-# НАДЁЖНЫЙ ПАРСЕР ПОИСКОВОЙ ВЫДАЧИ (С RETRY)
+# НАДЁЖНЫЙ ПАРСЕР ПОИСКОВОЙ ВЫДАЧИ
 # ==========================================
 def parse_rutracker(query_text, category_id=None, retry=True):
     try:
@@ -211,10 +218,8 @@ def parse_rutracker(query_text, category_id=None, retry=True):
         resp = r_session.get(url, timeout=25)
         resp.encoding = 'windows-1251'
         
-        # Защита от вылета сессии куков
         if resp.status_code != 200 or "login_username" in resp.text or "ddos" in resp.text.lower():
             if retry:
-                print("⚠️ Сессия устарела или сброшена. Запуск горячей переавторизации...")
                 if login():
                     return parse_rutracker(query_text, category_id, retry=False)
             return []
@@ -231,7 +236,7 @@ def parse_rutracker(query_text, category_id=None, retry=True):
             if not links:
                 continue
                 
-            title = links[0].get_text(strip=True)[:65]
+            title = links[0].get_text(strip=True)[:55]
             tid = links[0]['href'].split('t=')[-1]
             size = "---"
             
@@ -254,15 +259,13 @@ def parse_rutracker(query_text, category_id=None, retry=True):
             if login():
                 return parse_rutracker(query_text, category_id, retry=False)
                 
-        return unique[:10]
+        return unique[:40]
     except Exception as e:
         print(f"❌ Системная ошибка поиска: {e}")
-        if retry and login():
-            return parse_rutracker(query_text, category_id, retry=False)
         return []
 
 # ==========================================
-# ПАРСЕР СТРАНИЦЫ РАЗДАЧИ
+# НОВЫЙ АВТОНОМНЫЙ ПАРСЕР СТРАНИЦЫ РАЗДАЧИ
 # ==========================================
 def parse_topic_details(tid):
     try:
@@ -274,58 +277,73 @@ def parse_topic_details(tid):
         resp.encoding = 'windows-1251'
         soup = BeautifulSoup(resp.text, 'html.parser')
         
+        # Получение постера
         img_url = None
         img_tag = soup.find('var', class_='postImg')
         if img_tag and img_tag.get('title'):
             img_url = img_tag['title']
 
-        description_text = ""
-        main_post = soup.find('td', class_='message', id=re.compile(r'^p-\d+'))
+        # Извлекаем основной контейнер раздачи на Rutracker
+        postbody = soup.find('span', class_='postbody')
+        if not postbody:
+            postbody = soup.find('td', class_='message')
         
-        if main_post:
-            full_text = main_post.get_text()
+        description_text = ""
+        if postbody:
+            post_copy = BeautifulSoup(str(postbody), 'html.parser')
+            
+            # Важно: Вырезаем все спойлеры, чтобы убрать скриншоты и логи установки
+            for sp in post_copy.find_all('div', class_='sp-wrap'):
+                sp.decompose()
+                
+            full_text = post_copy.get_text()
             lines = [l.strip() for l in full_text.split('\n') if l.strip()]
             
+            # Сбор структурированных характеристик
             details = {}
-            patterns = {
-                'версия': re.compile(r'(ℹ️|▪️)?\s*(оф\s+)?(патч\s+)?(версия|v|update)\s*:\s*([^\n]+)', re.IGNORECASE),
-                'вес': re.compile(r'(размер|вес)\s*(раздачи|файла)?\s*:\s*([^\n]+)', re.IGNORECASE),
-                'таблетка': re.compile(r'(таблетка|лекарство|crack|защита)\s*:\s*([^\n]+)', re.IGNORECASE),
-                'язык': re.compile(r'язык\s*(интерфейса|озвучки)?\s*:\s*([^\n]+)', re.IGNORECASE),
-                'жанр': re.compile(r'жанр\s*:\s*([^\n]+)', re.IGNORECASE),
-                'разработчик': re.compile(r'(разработчик|издатель)\s*:\s*([^\n]+)', re.IGNORECASE)
-            }
-            
             for line in lines:
-                for key, pattern in patterns.items():
-                    if key not in details:
-                        match = pattern.search(line)
-                        if match:
-                            val = line.split(':', 1)[-1].strip()
-                            details[key] = re.sub(r'\[[^>]+\]', '', val)[:80]
+                line_lower = line.lower()
+                if 'жанр' in line_lower and 'жанр' not in details:
+                    details['жанр'] = line.split(':', 1)[-1].strip()
+                elif ('версия' in line_lower or 'v/' in line_lower or 'update' in line_lower) and 'версия' not in details:
+                    details['версия'] = line.split(':', 1)[-1].strip()
+                elif ('размер' in line_lower or 'вес' in line_lower) and 'вес' not in details:
+                    details['вес'] = line.split(':', 1)[-1].strip()
+                elif 'язык' in line_lower and 'язык' not in details:
+                    details['язык'] = line.split(':', 1)[-1].strip()
+                elif ('таблетка' in line_lower or 'лекарство' in line_lower or 'crack' in line_lower) and 'таблетка' not in details:
+                    details['таблетка'] = line.split(':', 1)[-1].strip()
+                elif ('разработчик' in line_lower or 'издатель' in line_lower) and 'разработчик' not in details:
+                    details['разработчик'] = line.split(':', 1)[-1].strip()
 
             info_blocks = []
             if 'жанр' in details: info_blocks.append(f"🎮 <b>Жанр:</b> {details['жанр']}")
-            if 'версия' in details: info_blocks.append(f"ℹ️ <b>Версия сборки:</b> {details['версия']}")
+            if 'версия' in details: info_blocks.append(f"ℹ️ <b>Версия:</b> {details['версия']}")
             if 'вес' in details: info_blocks.append(f"💼 <b>Размер / Вес:</b> {details['вес']}")
             if 'язык' in details: info_blocks.append(f"🗣 <b>Язык:</b> {details['язык']}")
             if 'таблетка' in details: info_blocks.append(f"🏴‍☠️ <b>Таблетка:</b> {details['таблетка']}")
             if 'разработчик' in details: info_blocks.append(f"👨‍💻 <b>Разработчик:</b> {details['разработчик']}")
 
-            if not info_blocks:
-                fallback_lines = [l for l in lines if len(l) > 15 and not l.startswith('[')][:4]
+            # Если структурированные параметры не поймались — берем текстовое превью раздачи
+            if len(info_blocks) < 2:
+                fallback_lines = []
+                for l in lines:
+                    if len(l) > 12 and not l.startswith('[') and not l.endswith(']'):
+                        fallback_lines.append(l)
+                    if len(fallback_lines) >= 8: # Ограничиваемся 8 красивыми строками описания
+                        break
                 if fallback_lines:
                     description_text = "\n".join(fallback_lines)
                 else:
-                    description_text = "Технические детали доступны внутри .torrent файла."
+                    description_text = "Техническая сводка доступна непосредственно внутри загружаемого торрент-файла."
             else:
                 description_text = "\n".join(info_blocks)
         else:
-            description_text = "Не удалось прочитать описание топика."
+            description_text = "Описание релиза не найдено или скрыто трекером."
 
+        # Сбор комментариев для ИИ
         comments = []
         all_posts = soup.find_all('tr', class_=re.compile(r'prow\d+'))
-        
         if len(all_posts) > 1:
             for post_row in all_posts[1:]:
                 msg_body = post_row.find('td', class_='message')
@@ -333,20 +351,18 @@ def parse_topic_details(tid):
                     msg_copy = BeautifulSoup(str(msg_body), 'html.parser')
                     for q in msg_copy.find_all('table', class_='forumline'): 
                         q.decompose()
-                    
                     txt = msg_copy.get_text().strip()
                     txt = re.sub(r'\[[^>]+\]', '', txt)
                     txt = " ".join(txt.split())
-                    
-                    if len(txt) > 25 and not any(word in txt.lower() for word in ['спасибо', 'благодарю', 'обновил']):
+                    if len(txt) > 25 and not any(w in txt.lower() for w in ['спасибо', 'благодарю', 'обновил']):
                         comments.append(txt[:300])
                 if len(comments) >= 10: 
                     break
 
         return img_url, description_text, comments
     except Exception as e:
-        print(f"❌ Критическая ошибка парсера: {e}")
-        return None, "Ошибка обработки контента страницы.", []
+        print(f"❌ Ошибка парсера страниц: {e}")
+        return None, "Ошибка обработки текстового контента страницы.", []
 
 # ==========================================
 # ИНТЕГРАЦИЯ С GEMINI AI API
@@ -354,7 +370,6 @@ def parse_topic_details(tid):
 def get_ai_summary(comments):
     if not ai_client or not comments:
         return "Отзывы к релизу отсутствуют или в ветке пока нет обсуждений."
-        
     raw_text = "\n".join([f"- {c}" for c in comments])
     prompt = (
         "Ты — ИИ-модератор торрент-трекера. Оцени качество релиза по комментариям пользователей.\n"
@@ -364,14 +379,13 @@ def get_ai_summary(comments):
     )
     try:
         response = ai_client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
-        if response.text:
-            return response.text.strip()
+        if response.text: return response.text.strip()
         return "Не удалось проанализировать отзывы."
     except Exception: 
         return "Ошибка генерации вердикта ИИ."
 
 # ==========================================
-# ГЕНЕРАТОРЫ ИНТЕРФЕЙСА ПОД ЯЗЫКИ
+# ГЕНЕРАТОРЫ ИНТЕРФЕЙСА И ПАГИНАЦИИ
 # ==========================================
 def get_main_keyboard(chat_id):
     lang = user_lang.get(chat_id, 'ru')
@@ -392,13 +406,58 @@ def check_and_increment_limit(user_obj, chat_id):
     user_usage[chat_id] = used_today + 1
     return True
 
+def render_search_page(chat_id, message_id=None):
+    lang = user_lang.get(chat_id, 'ru')
+    state = user_searches.get(chat_id)
+    if not state or not state["results"]:
+        bot.send_message(chat_id, STRINGS[lang]['no_results'], reply_markup=get_main_keyboard(chat_id))
+        return
+
+    results = state["results"]
+    page = state["page"]
+    start_idx = page * 5
+    end_idx = start_idx + 5
+    page_items = results[start_idx:end_idx]
+    total_items = len(results)
+    total_pages = (total_items + 4) // 5
+
+    kb = types.InlineKeyboardMarkup(row_width=1)
+    for item in page_items:
+        lbl = STRINGS[lang]['weight']
+        btn_text = f"📄 {clean_html(item['title'])} [{lbl}: {clean_html(item['size'])}]"
+        kb.add(types.InlineKeyboardButton(btn_text, callback_data=f"v{item['tid']}"))
+    
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(types.InlineKeyboardButton(STRINGS[lang]['prev_btn'], callback_data="nav_prev"))
+    if end_idx < total_items:
+        nav_buttons.append(types.InlineKeyboardButton(STRINGS[lang]['next_btn'], callback_data="nav_next"))
+    
+    if nav_buttons:
+        kb.row(*nav_buttons)
+
+    header = STRINGS[lang]['search_header'].format(current=page + 1, total=total_pages)
+    if message_id:
+        try: bot.edit_message_text(header, chat_id, message_id, reply_markup=kb, parse_mode="HTML")
+        except Exception:
+            msg = bot.send_message(chat_id, header, reply_markup=kb, parse_mode="HTML")
+            register_msg_for_deletion(chat_id, msg.message_id)
+    else:
+        msg = bot.send_message(chat_id, header, reply_markup=kb, parse_mode="HTML")
+        register_msg_for_deletion(chat_id, msg.message_id)
+
+def show_welcome_after_lang(chat_id, from_user):
+    lang = user_lang.get(chat_id, 'ru')
+    welcome = STRINGS[lang]['welcome']
+    if check_moderator(from_user): welcome += STRINGS[lang]['dev_mode']
+    bot.send_message(chat_id, welcome, reply_markup=get_main_keyboard(chat_id), parse_mode="HTML")
+
 # ==========================================
 # ХЕНДЛЕРЫ КНОПОК И КОМАНД
 # ==========================================
 @bot.message_handler(commands=['start'])
 def start_cmd(m):
     total_users.add(m.chat.id)
-    if m.chat.id not in user_lang: user_lang[m.chat.id] = 'ru'
     if m.chat.id not in user_limits: user_limits[m.chat.id] = 3
     if m.chat.id not in user_usage: user_usage[m.chat.id] = 0
     if m.chat.id not in user_total_searches: user_total_searches[m.chat.id] = 0
@@ -409,24 +468,20 @@ def start_cmd(m):
         try:
             referrer_id = int(args[1].replace('ref', ''))
             if referrer_id != m.chat.id and m.chat.id not in referrals.get(referrer_id, []):
-                if referrer_id not in referrals: 
-                    referrals[referrer_id] = []
+                if referrer_id not in referrals: referrals[referrer_id] = []
                 referrals[referrer_id].append(m.chat.id)
                 user_limits[referrer_id] = user_limits.get(referrer_id, 3) + 2
                 try: 
                     lang = user_lang.get(referrer_id, 'ru')
                     msg_text = "🎉 Новое приглашение! Ваш суточный лимит увеличен на +2." if lang == 'ru' else "🎉 New referral! Your daily limit increased by +2."
                     bot.send_message(referrer_id, msg_text)
-                except Exception: 
-                    pass
-        except Exception: 
-            pass
+                except: pass
+        except: pass
 
-    lang = user_lang.get(m.chat.id, 'ru')
-    welcome = STRINGS[lang]['welcome']
-    if check_moderator(m.from_user):
-        welcome += STRINGS[lang]['dev_mode']
-    bot.send_message(m.chat.id, welcome, reply_markup=get_main_keyboard(m.chat.id), parse_mode="HTML")
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("🇷🇺 Русский", callback_data="init_lang_ru"))
+    kb.add(types.InlineKeyboardButton("🇬🇧 English", callback_data="init_lang_en"))
+    bot.send_message(m.chat.id, "🌐 Выберите язык интерфейса / Select interface language:", reply_markup=kb)
 
 @bot.message_handler(commands=['force_pay_test'])
 def force_pay_test(m):
@@ -438,7 +493,8 @@ def force_pay_test(m):
 
 @bot.message_handler(func=lambda m: m.text in [MENU_BUTTONS['ru']['menu'], MENU_BUTTONS['en']['menu'], '🏠 Главное меню', 'Меню', '/menu'])
 def menu_redirect(m): 
-    start_cmd(m)
+    if m.chat.id not in user_lang: user_lang[m.chat.id] = 'ru'
+    show_welcome_after_lang(m.chat.id, m.from_user)
 
 @bot.message_handler(func=lambda m: m.text in [MENU_BUTTONS['ru']['search'], MENU_BUTTONS['en']['search'], '🔍 Поиск релизов', 'Поиск'])
 def ask_search(m):
@@ -508,13 +564,11 @@ def show_lang_menu(m):
     bot.send_message(m.chat.id, STRINGS[lang]['lang_select'], reply_markup=kb)
 
 # ==========================================
-# ИЗОЛИРОВАННЫЙ ОБРАБОТЧИК КОРНЕВОГО ПОИСКА
+# ОБРАБОТЧИК КОРНЕВОГО ПОИСКА
 # ==========================================
-# Собираем полный пул системных слов, чтобы поиск не перехватывал нажатия кнопок меню
 BLACKLIST_TEXTS = ['🏠 Главное меню', 'Меню', '/menu', 'Поиск', 'Каталог', '/start', '/force_pay_test']
 for sub_dict in MENU_BUTTONS.values():
-    for btn_name in sub_dict.values():
-        BLACKLIST_TEXTS.append(btn_name)
+    for btn_name in sub_dict.values(): BLACKLIST_TEXTS.append(btn_name)
 
 @bot.message_handler(func=lambda m: m.text not in BLACKLIST_TEXTS)
 def handle_text(m):
@@ -532,23 +586,12 @@ def handle_text(m):
     status_msg = bot.send_message(m.chat.id, STRINGS[lang]['search_status'])
     results = parse_rutracker(query_text=m.text)
     
-    try: 
-        bot.delete_message(m.chat.id, status_msg.message_id)
-    except Exception: 
-        pass
+    try: bot.delete_message(m.chat.id, status_msg.message_id)
+    except: pass
     
     if results:
-        for item in results:
-            kb = types.InlineKeyboardMarkup()
-            kb.add(types.InlineKeyboardButton(STRINGS[lang]['card_btn'], callback_data=f"v{item['tid']}"))
-            
-            lbl = STRINGS[lang]['weight']
-            text = f"▪️ <b>{clean_html(item['title'])}</b>\n└ 💼 {lbl}: <code>{clean_html(item['size'])}</code>"
-            try:
-                msg = bot.send_message(m.chat.id, text, reply_markup=kb, parse_mode="HTML")
-                register_msg_for_deletion(m.chat.id, msg.message_id)
-            except Exception: 
-                pass
+        user_searches[m.chat.id] = {"results": results, "page": 0}
+        render_search_page(m.chat.id)
     else:
         bot.send_message(m.chat.id, STRINGS[lang]['no_results'], reply_markup=get_main_keyboard(m.chat.id))
 
@@ -562,32 +605,44 @@ def callbacks(c):
     bot.answer_callback_query(c.id)
     lang = user_lang.get(cid, 'ru')
     
-    # Смена языка интерфеса
-    if c.data == "set_lang_ru":
+    if c.data == "init_lang_ru":
+        user_lang[cid] = 'ru'
+        try: bot.delete_message(cid, c.message.message_id)
+        except: pass
+        show_welcome_after_lang(cid, c.from_user)
+    elif c.data == "init_lang_en":
+        user_lang[cid] = 'en'
+        try: bot.delete_message(cid, c.message.message_id)
+        except: pass
+        show_welcome_after_lang(cid, c.from_user)
+        
+    elif c.data == "set_lang_ru":
         user_lang[cid] = 'ru'
         bot.send_message(cid, STRINGS['ru']['lang_changed'], reply_markup=get_main_keyboard(cid))
     elif c.data == "set_lang_en":
         user_lang[cid] = 'en'
         bot.send_message(cid, STRINGS['en']['lang_changed'], reply_markup=get_main_keyboard(cid))
         
+    elif c.data == "nav_prev":
+        if cid in user_searches and user_searches[cid]["page"] > 0:
+            user_searches[cid]["page"] -= 1
+            render_search_page(cid, c.message.message_id)
+            
+    elif c.data == "nav_next":
+        if cid in user_searches:
+            state = user_searches[cid]
+            if (state["page"] + 1) * 5 < len(state["results"]):
+                state["page"] += 1
+                render_search_page(cid, c.message.message_id)
+
     elif c.data.startswith('c'):
-        if not check_and_increment_limit(c.from_user, cid): 
-            return
+        if not check_and_increment_limit(c.from_user, cid): return
         clear_previous_interface_messages(cid)
         results = parse_rutracker(query_text=None, category_id=c.data[1:])
         if results:
             user_total_searches[cid] = user_total_searches.get(cid, 0) + 1
-            for item in results:
-                kb = types.InlineKeyboardMarkup()
-                kb.add(types.InlineKeyboardButton(STRINGS[lang]['card_btn'], callback_data=f"v{item['tid']}"))
-                
-                lbl = STRINGS[lang]['weight']
-                text = f"▪️ <b>{clean_html(item['title'])}</b>\n└ 💼 {lbl}: <code>{clean_html(item['size'])}</code>"
-                try:
-                    msg = bot.send_message(cid, text, reply_markup=kb, parse_mode="HTML")
-                    register_msg_for_deletion(cid, msg.message_id)
-                except Exception: 
-                    pass
+            user_searches[cid] = {"results": results, "page": 0}
+            render_search_page(cid)
 
     elif c.data.startswith('d'):
         tid = c.data[1:]
@@ -601,8 +656,7 @@ def callbacks(c):
             bot.send_message(cid, STRINGS[lang]['torrent_fail'])
     
     elif c.data.startswith('v'):
-        if not check_and_increment_limit(c.from_user, cid): 
-            return
+        if not check_and_increment_limit(c.from_user, cid): return
         tid = c.data[1:]
         clear_previous_interface_messages(cid)
 
@@ -610,21 +664,15 @@ def callbacks(c):
         img_url, description, comments = parse_topic_details(tid)
         summary = get_ai_summary(comments)
         
-        try: 
-            bot.delete_message(cid, wait_msg.message_id)
-        except Exception: 
-            pass
+        try: bot.delete_message(cid, wait_msg.message_id)
+        except: pass
         
         kb = types.InlineKeyboardMarkup(row_width=2)
         kb.add(types.InlineKeyboardButton(STRINGS[lang]['download_btn'], callback_data=f"d{tid}"))
         kb.add(types.InlineKeyboardButton(STRINGS[lang]['ref_btn'], callback_data="inline_ref"))
         kb.add(types.InlineKeyboardButton(STRINGS[lang]['sub_btn'], callback_data="inline_sub"))
         
-        if c.message.text:
-            title_text = clean_html(c.message.text.split('\n')[0].replace('▪️ ', ''))
-        else:
-            title_text = "Release Card" if lang == 'en' else "Карточка релиза"
-            
+        title_text = "Release Card" if lang == 'en' else "Карточка релиза"
         card_text = f"📦 <b>{title_text}</b>\n\n{STRINGS[lang]['details_title']}\n{description}\n\n{STRINGS[lang]['verdict_title']}\n<blockquote>{clean_html(summary)}</blockquote>"
         
         try:
@@ -635,24 +683,17 @@ def callbacks(c):
         except Exception:
             msg = bot.send_message(cid, card_text, reply_markup=kb, parse_mode="HTML")
             
-        if msg: 
-            register_msg_for_deletion(cid, msg.message_id)
+        if msg: register_msg_for_deletion(cid, msg.message_id)
             
     elif c.data in ['buy_premium', 'inline_sub']:
-        if cid in premium_users: 
-            return
+        if cid in premium_users: return
         prices = [types.LabeledPrice(label='Premium (1 month)', amount=25)]
         try:
             desc = "Premium access and Gemini AI reviews analysis" if lang == 'en' else "Снятие лимитов и активация ИИ-анализа комментариев."
             bot.send_invoice(
-                chat_id=cid, 
-                title="⭐ Premium Access",
-                description=desc,
-                invoice_payload="monthly_premium_stars", 
-                provider_token="", 
-                currency="XTR", 
-                prices=prices, 
-                start_parameter="premium-sub"
+                chat_id=cid, title="⭐ Premium Access", description=desc,
+                invoice_payload="monthly_premium_stars", provider_token="", 
+                currency="XTR", prices=prices, start_parameter="premium-sub"
             )
         except Exception as e: 
             bot.send_message(cid, f"❌ Invoice Error: {e}")
@@ -663,8 +704,7 @@ def callbacks(c):
         bot.send_message(cid, f"{STRINGS[lang]['ref_link_msg']}<code>{ref_link}</code>", parse_mode="HTML")
 
     elif c.data == "test_drop_my_sub":
-        if cid in premium_users: 
-            premium_users.remove(cid)
+        if cid in premium_users: premium_users.remove(cid)
         user_usage[cid] = 0 
         bot.send_message(cid, "🗑 Sub dropped." if lang == 'en' else "🗑 Подписка сброшена.")
         show_premium(c.message)
@@ -687,9 +727,9 @@ def payment_success(m):
         bot.send_message(m.chat.id, ok_msg, reply_markup=get_main_keyboard(m.chat.id), parse_mode="HTML")
 
 # ==========================================
-# ТОЧКА ВХОДА В ПРИЛОЖЕНИЕ
+# ТОЧКА ВХОДА В ПРИЛОЖЕНИЕ (INFINITY POLLING)
 # ==========================================
 if __name__ == '__main__':
     if login():
-        print("🚀 Бот полностью запущен. Мультиязычность и система авто-релогина активны.")
-        bot.polling(none_stop=True)
+        print("🚀 Бот запущен. Автономные описания и пагинация активны.")
+        bot.infinity_polling(timeout=15, long_polling_timeout=5)
