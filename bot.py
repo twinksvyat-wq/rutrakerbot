@@ -22,7 +22,6 @@ if not all([TOKEN, R_LOGIN, R_PASSWORD]):
     print("❌ КРИТИЧЕСКАЯ ОШИБКА: Проверьте переменные окружения!")
     exit(1)
 
-# Инициализация клиента Gemini API
 if GEMINI_KEY:
     ai_client = genai.Client(api_key=GEMINI_KEY)
 else:
@@ -47,8 +46,90 @@ CAT_MAP = {
 MODERATORS = ["Ki_l1"]
 
 # ==========================================
+# МОДУЛЬ ЛОКАЛИЗАЦИИ И СЛОВАРЕЙ (RU / EN)
+# ==========================================
+MENU_BUTTONS = {
+    'ru': {
+        'search': '🔍 Поиск релизов',
+        'catalog': '📂 Каталог тем',
+        'limits': '👥 Рефералы и Лимиты',
+        'premium': '⭐ Безлимитный доступ',
+        'menu': '🏠 Главное меню',
+        'lang': '🌐 Язык / Language'
+    },
+    'en': {
+        'search': '🔍 Search Releases',
+        'catalog': '📂 Topic Catalog',
+        'limits': '👥 Referrals & Limits',
+        'premium': '⭐ Unlimited Access',
+        'menu': '🏠 Main Menu',
+        'lang': '🌐 Language / Язык'
+    }
+}
+
+STRINGS = {
+    'ru': {
+        'welcome': "🛸 <b>Torrent Archive активен</b>\n\nЯ индексирую раздачи и выдаю файлы напрямую в обход блокировок.\n\n⚡️ <i>Используйте нижнее меню для работы с поиском.</i>",
+        'dev_mode': "\n\n👑 <b>Режим разработчика: Безлимит активирован.</b>",
+        'ask_search': "✏️ Введи название релиза для поиска в архиве:",
+        'show_cat': "📂 Выберите категорию для быстрого просмотра:",
+        'search_status': "🔎 Сверяю индексы базы данных...",
+        'no_results': "❌ По данному запросу ничего не найдено.",
+        'limit_exceeded': "⚠️ Суточный лимит исчерпан. Обновите подписку или пригласите друзей.",
+        'card_loading': "⏳ <i>Формирую карточку релиза и опрашиваю Gemini ИИ...</i>",
+        'verdict_title': "🤖 <b>Вердикт ИИ по отзывам:</b>",
+        'details_title': "📋 <b>Детали сборки:</b>",
+        'download_btn': "📥 Скачать .torrent",
+        'ref_btn': "👥 Рефка",
+        'sub_btn': "⭐️ Подписка",
+        'torrent_success': "✅ Торрент-файл успешно сгенерирован.",
+        'torrent_fail': "❌ Не удалось скачать файл с трекера.",
+        'premium_active': "⭐ <b>Ваш Premium активен!</b>\nСуточные лимиты отключены.",
+        'premium_buy': "⭐ <b>Premium доступ</b>\n\nСнимает любые ограничения на поиск и запускает анализ раздач через Gemini нейросеть.",
+        'buy_btn': "⭐️ Купить Premium за 25 Звезд",
+        'drop_sub_btn': "🗑 Сбросить подписку (Тест)",
+        'lang_select': "🌐 Выберите язык интерфейса / Select interface language:",
+        'lang_changed': "✅ Язык успешно изменен на Русский!",
+        'ref_link_msg': "🔗 <b>Реферальная ссылка:</b>\n",
+        'card_err': "Не удалось загрузить страницу топика.",
+        'parse_err': "Ошибка обработки контента страницы.",
+        'card_btn': "📄 Открыть карточку релиза",
+        'weight': "Вес"
+    },
+    'en': {
+        'welcome': "🛸 <b>Torrent Archive is active</b>\n\nI index releases and provide files directly bypassing blocks.\n\n⚡️ <i>Use the bottom menu to search.</i>",
+        'dev_mode': "\n\n👑 <b>Developer Mode: Unlimited activated.</b>",
+        'ask_search': "✏️ Enter the release name to search the archive:",
+        'show_cat': "📂 Select a category for quick browsing:",
+        'search_status': "🔎 Checking database matrix...",
+        'no_results': "❌ Nothing found for this request.",
+        'limit_exceeded': "⚠️ Daily limit exceeded. Upgrade your subscription or invite friends.",
+        'card_loading': "⏳ <i>Generating release card and querying Gemini AI...</i>",
+        'verdict_title': "🤖 <b>AI Verdict based on reviews:</b>",
+        'details_title': "📋 <b>Build Details:</b>",
+        'download_btn': "📥 Download .torrent",
+        'ref_btn': "👥 Ref Link",
+        'sub_btn': "⭐️ Subscription",
+        'torrent_success': "✅ Torrent file successfully generated.",
+        'torrent_fail': "❌ Failed to download file from tracker.",
+        'premium_active': "⭐ <b>Your Premium is active!</b>\nDaily limits are disabled.",
+        'premium_buy': "⭐ <b>Premium Access</b>\n\nRemoves all search limitations and enables release review analysis via Gemini AI.",
+        'buy_btn': "⭐️ Buy Premium for 25 Stars",
+        'drop_sub_btn': "🗑 Reset subscription (Test)",
+        'lang_select': "🌐 Select interface language / Выберите язык интерфейса:",
+        'lang_changed': "✅ Language successfully changed to English!",
+        'ref_link_msg': "🔗 <b>Referral link:</b>\n",
+        'card_err': "Failed to load topic page.",
+        'parse_err': "Error processing page content.",
+        'card_btn': "📄 Open release card",
+        'weight': "Weight"
+    }
+}
+
+# ==========================================
 # ХРАНИЛИЩА ДАННЫХ В ПАМЯТИ (ОПЕРАТИВКА)
 # ==========================================
+user_lang = {}              
 total_users = set()
 total_requests_count = 0
 referrals = {}      
@@ -115,9 +196,9 @@ def check_moderator(user_obj):
     return False
 
 # ==========================================
-# ПАРСЕР ПОИСКОВОЙ ВЫДАЧИ
+# НАДЁЖНЫЙ ПАРСЕР ПОИСКОВОЙ ВЫДАЧИ (С RETRY)
 # ==========================================
-def parse_rutracker(query_text, category_id=None):
+def parse_rutracker(query_text, category_id=None, retry=True):
     try:
         if query_text:
             encoded_query = urllib.parse.quote(query_text.encode('windows-1251'))
@@ -128,14 +209,24 @@ def parse_rutracker(query_text, category_id=None):
             return []
 
         resp = r_session.get(url, timeout=25)
-        if resp.status_code != 200 or "ddos" in resp.text.lower():
+        resp.encoding = 'windows-1251'
+        
+        # Защита от вылета сессии куков
+        if resp.status_code != 200 or "login_username" in resp.text or "ddos" in resp.text.lower():
+            if retry:
+                print("⚠️ Сессия устарела или сброшена. Запуск горячей переавторизации...")
+                if login():
+                    return parse_rutracker(query_text, category_id, retry=False)
             return []
             
-        resp.encoding = 'windows-1251'
         soup = BeautifulSoup(resp.text, 'html.parser')
         results = []
         
-        for row in soup.find_all('tr'):
+        rows = soup.find_all('tr', class_='tCenter')
+        if not rows:
+            rows = soup.find_all('tr')
+        
+        for row in rows:
             links = [l for l in row.find_all('a', href=True) if "viewtopic.php?t=" in l['href']]
             if not links:
                 continue
@@ -158,13 +249,20 @@ def parse_rutracker(query_text, category_id=None):
             if r['tid'] not in seen: 
                 unique.append(r)
                 seen.add(r['tid'])
+                
+        if not unique and retry:
+            if login():
+                return parse_rutracker(query_text, category_id, retry=False)
+                
         return unique[:10]
     except Exception as e:
-        print(f"❌ Ошибка поиска: {e}")
+        print(f"❌ Системная ошибка поиска: {e}")
+        if retry and login():
+            return parse_rutracker(query_text, category_id, retry=False)
         return []
 
 # ==========================================
-# ПАРСЕР СТРАНИЦЫ РАЗДАЧИ (ТЕХ. ДЕТАЛИ И КОММЕНТЫ)
+# ПАРСЕР СТРАНИЦЫ РАЗДАЧИ
 # ==========================================
 def parse_topic_details(tid):
     try:
@@ -176,13 +274,11 @@ def parse_topic_details(tid):
         resp.encoding = 'windows-1251'
         soup = BeautifulSoup(resp.text, 'html.parser')
         
-        # 1. Поиск обложки / постера
         img_url = None
         img_tag = soup.find('var', class_='postImg')
         if img_tag and img_tag.get('title'):
             img_url = img_tag['title']
 
-        # 2. Построчный разбор описания регулярками
         description_text = ""
         main_post = soup.find('td', class_='message', id=re.compile(r'^p-\d+'))
         
@@ -227,7 +323,6 @@ def parse_topic_details(tid):
         else:
             description_text = "Не удалось прочитать описание топика."
 
-        # 3. Сбор комментариев (исключая заглавный пост)
         comments = []
         all_posts = soup.find_all('tr', class_=re.compile(r'prow\d+'))
         
@@ -276,13 +371,15 @@ def get_ai_summary(comments):
         return "Ошибка генерации вердикта ИИ."
 
 # ==========================================
-# СИСТЕМА ЛИМИТОВ И КЛАВИАТУРЫ
+# ГЕНЕРАТОРЫ ИНТЕРФЕЙСА ПОД ЯЗЫКИ
 # ==========================================
-def get_main_keyboard():
+def get_main_keyboard(chat_id):
+    lang = user_lang.get(chat_id, 'ru')
+    b = MENU_BUTTONS[lang]
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.row('🔍 Поиск релизов', '📂 Каталог тем')
-    kb.row('👥 Рефералы и Лимиты', '⭐ Безлимитный доступ')
-    kb.row('🏠 Главное меню')
+    kb.row(b['search'], b['catalog'])
+    kb.row(b['limits'], b['premium'])
+    kb.row(b['menu'], b['lang'])
     return kb
 
 def check_and_increment_limit(user_obj, chat_id):
@@ -296,11 +393,12 @@ def check_and_increment_limit(user_obj, chat_id):
     return True
 
 # ==========================================
-# ХЕНДЛЕРЫ КОМАНД (ВЫЗОВЫ ИЗ МЕНЮ)
+# ХЕНДЛЕРЫ КНОПОК И КОМАНД
 # ==========================================
 @bot.message_handler(commands=['start'])
 def start_cmd(m):
     total_users.add(m.chat.id)
+    if m.chat.id not in user_lang: user_lang[m.chat.id] = 'ru'
     if m.chat.id not in user_limits: user_limits[m.chat.id] = 3
     if m.chat.id not in user_usage: user_usage[m.chat.id] = 0
     if m.chat.id not in user_total_searches: user_total_searches[m.chat.id] = 0
@@ -316,20 +414,19 @@ def start_cmd(m):
                 referrals[referrer_id].append(m.chat.id)
                 user_limits[referrer_id] = user_limits.get(referrer_id, 3) + 2
                 try: 
-                    bot.send_message(referrer_id, "🎉 Новое приглашение! Ваш суточный лимит увеличен на +2.")
+                    lang = user_lang.get(referrer_id, 'ru')
+                    msg_text = "🎉 Новое приглашение! Ваш суточный лимит увеличен на +2." if lang == 'ru' else "🎉 New referral! Your daily limit increased by +2."
+                    bot.send_message(referrer_id, msg_text)
                 except Exception: 
                     pass
         except Exception: 
             pass
 
-    welcome = (
-        "🛸 <b>Torrent Archive активен</b>\n\n"
-        "Я индексирую раздачи и выдаю файлы напрямую в обход блокировок.\n\n"
-        "⚡️ <i>Используйте нижнее меню для работы с поиском.</i>"
-    )
+    lang = user_lang.get(m.chat.id, 'ru')
+    welcome = STRINGS[lang]['welcome']
     if check_moderator(m.from_user):
-        welcome += "\n\n👑 <b>Режим разработчика: Безлимит активирован.</b>"
-    bot.send_message(m.chat.id, welcome, reply_markup=get_main_keyboard(), parse_mode="HTML")
+        welcome += STRINGS[lang]['dev_mode']
+    bot.send_message(m.chat.id, welcome, reply_markup=get_main_keyboard(m.chat.id), parse_mode="HTML")
 
 @bot.message_handler(commands=['force_pay_test'])
 def force_pay_test(m):
@@ -339,71 +436,100 @@ def force_pay_test(m):
         premium_dates[m.chat.id] = datetime.datetime.now()
         bot.send_message(m.chat.id, "🪄 <b>Симулятор оплаты сработал! Тебе выдан Premium.</b>", parse_mode="HTML")
 
-@bot.message_handler(func=lambda m: m.text in ['🏠 Главное меню', 'Меню', '/menu'])
+@bot.message_handler(func=lambda m: m.text in [MENU_BUTTONS['ru']['menu'], MENU_BUTTONS['en']['menu'], '🏠 Главное меню', 'Меню', '/menu'])
 def menu_redirect(m): 
     start_cmd(m)
 
-@bot.message_handler(func=lambda m: m.text in ['🔍 Поиск релизов', 'Поиск'])
+@bot.message_handler(func=lambda m: m.text in [MENU_BUTTONS['ru']['search'], MENU_BUTTONS['en']['search'], '🔍 Поиск релизов', 'Поиск'])
 def ask_search(m):
+    lang = user_lang.get(m.chat.id, 'ru')
     clear_previous_interface_messages(m.chat.id)
-    bot.send_message(m.chat.id, "✏️ Введи название релиза для поиска в архиве:", reply_markup=get_main_keyboard())
+    bot.send_message(m.chat.id, STRINGS[lang]['ask_search'], reply_markup=get_main_keyboard(m.chat.id))
 
-@bot.message_handler(func=lambda m: m.text in ['📂 Каталог тем', 'Каталог'])
+@bot.message_handler(func=lambda m: m.text in [MENU_BUTTONS['ru']['catalog'], MENU_BUTTONS['en']['catalog'], '📂 Каталог тем', 'Каталог'])
 def show_cat(m):
+    lang = user_lang.get(m.chat.id, 'ru')
     clear_previous_interface_messages(m.chat.id)
     kb = types.InlineKeyboardMarkup(row_width=2)
     for name, fid in CAT_MAP.items(): 
         kb.add(types.InlineKeyboardButton(name, callback_data=f"c{fid}"))
-    msg = bot.send_message(m.chat.id, "📂 Выберите категорию для быстрого просмотра:", reply_markup=kb)
+    msg = bot.send_message(m.chat.id, STRINGS[lang]['show_cat'], reply_markup=kb)
     register_msg_for_deletion(m.chat.id, msg.message_id)
 
-@bot.message_handler(func=lambda m: m.text == '👥 Рефералы и Лимиты')
+@bot.message_handler(func=lambda m: m.text in [MENU_BUTTONS['ru']['limits'], MENU_BUTTONS['en']['limits']])
 def show_ref(m):
+    lang = user_lang.get(m.chat.id, 'ru')
     clear_previous_interface_messages(m.chat.id)
     bot_info = bot.get_me()
     ref_link = f"https://t.me/{bot_info.username}?start=ref{m.chat.id}"
     
     if check_moderator(m.from_user) or m.chat.id in premium_users:
-        status = "<b>∞ Безлимит</b>"
+        status = "<b>∞ Безлимит</b>" if lang == 'ru' else "<b>∞ Unlimited</b>"
     else:
-        status = f"<b>{user_usage.get(m.chat.id, 0)} из {user_limits.get(m.chat.id, 3)} запросов</b>"
+        status = f"<b>{user_usage.get(m.chat.id, 0)} из {user_limits.get(m.chat.id, 3)}</b>" if lang == 'ru' else f"<b>{user_usage.get(m.chat.id, 0)} of {user_limits.get(m.chat.id, 3)}</b>"
         
-    text = (
-        "👥 <b>Лимиты аккаунта</b>\n\n"
-        f"▪️ Использовано сегодня: {status}\n"
-        f"▪️ Всего приглашено: <b>{len(referrals.get(m.chat.id, []))}</b>\n\n"
-        f"🔗 Реферальный инвайт:\n<code>{ref_link}</code>"
-    )
-    bot.send_message(m.chat.id, text, reply_markup=get_main_keyboard(), parse_mode="HTML")
+    if lang == 'ru':
+        text = (
+            "👥 <b>Лимиты аккаунта</b>\n\n"
+            f"▪️ Использовано сегодня: {status}\n"
+            f"▪️ Всего приглашено: <b>{len(referrals.get(m.chat.id, []))}</b>\n\n"
+            f"🔗 Реферальный инвайт:\n<code>{ref_link}</code>"
+        )
+    else:
+        text = (
+            "👥 <b>Account Limits</b>\n\n"
+            f"▪️ Used today: {status}\n"
+            f"▪️ Total invited: <b>{len(referrals.get(m.chat.id, []))}</b>\n\n"
+            f"🔗 Referral Invite:\n<code>{ref_link}</code>"
+        )
+    bot.send_message(m.chat.id, text, reply_markup=get_main_keyboard(m.chat.id), parse_mode="HTML")
 
-@bot.message_handler(func=lambda m: m.text == '⭐ Безлимитный доступ')
+@bot.message_handler(func=lambda m: m.text in [MENU_BUTTONS['ru']['premium'], MENU_BUTTONS['en']['premium']])
 def show_premium(m):
+    lang = user_lang.get(m.chat.id, 'ru')
     clear_previous_interface_messages(m.chat.id)
     cid = m.chat.id
     kb = types.InlineKeyboardMarkup()
     
     if check_moderator(m.from_user) or cid in premium_users:
-        kb.add(types.InlineKeyboardButton("🗑 Сбросить подписку (Тест)", callback_data="test_drop_my_sub"))
-        bot.send_message(cid, "⭐ <b>Ваш Premium активен!</b>\nСуточные лимиты отключены.", reply_markup=kb, parse_mode="HTML")
+        kb.add(types.InlineKeyboardButton(STRINGS[lang]['drop_sub_btn'], callback_data="test_drop_my_sub"))
+        bot.send_message(cid, STRINGS[lang]['premium_active'], reply_markup=kb, parse_mode="HTML")
     else:
-        kb.add(types.InlineKeyboardButton("⭐️ Купить Premium за 25 Звезд", callback_data="buy_premium"))
-        bot.send_message(cid, "⭐ <b>Premium доступ</b>\n\nСнимает любые ограничения на поиск и запускает анализ раздач через Gemini нейросеть.", reply_markup=kb, parse_mode="HTML")
+        kb.add(types.InlineKeyboardButton(STRINGS[lang]['buy_btn'], callback_data="buy_premium"))
+        bot.send_message(cid, STRINGS[lang]['premium_buy'], reply_markup=kb, parse_mode="HTML")
+
+@bot.message_handler(func=lambda m: m.text in [MENU_BUTTONS['ru']['lang'], MENU_BUTTONS['en']['lang']])
+def show_lang_menu(m):
+    lang = user_lang.get(m.chat.id, 'ru')
+    clear_previous_interface_messages(m.chat.id)
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("🇷🇺 Русский", callback_data="set_lang_ru"))
+    kb.add(types.InlineKeyboardButton("🇬🇧 English", callback_data="set_lang_en"))
+    bot.send_message(m.chat.id, STRINGS[lang]['lang_select'], reply_markup=kb)
 
 # ==========================================
-# КОРНЕВОЙ ОБРАБОТЧИК ПОИСКОВЫХ ЗАПРОСОВ
+# ИЗОЛИРОВАННЫЙ ОБРАБОТЧИК КОРНЕВОГО ПОИСКА
 # ==========================================
-@bot.message_handler(func=lambda m: m.text not in ['🔍 Поиск релизов', '📂 Каталог тем', '👥 Рефералы и Лимиты', '⭐ Безлимитный доступ', '🏠 Главное меню', '/start', 'Поиск', 'Каталог', 'Меню'])
+# Собираем полный пул системных слов, чтобы поиск не перехватывал нажатия кнопок меню
+BLACKLIST_TEXTS = ['🏠 Главное меню', 'Меню', '/menu', 'Поиск', 'Каталог', '/start', '/force_pay_test']
+for sub_dict in MENU_BUTTONS.values():
+    for btn_name in sub_dict.values():
+        BLACKLIST_TEXTS.append(btn_name)
+
+@bot.message_handler(func=lambda m: m.text not in BLACKLIST_TEXTS)
 def handle_text(m):
+    lang = user_lang.get(m.chat.id, 'ru')
     global total_requests_count, user_total_searches
+    
     if not check_and_increment_limit(m.from_user, m.chat.id):
-        bot.send_message(m.chat.id, "⚠️ Суточный лимит исчерпан. Обновите подписку или пригласите друзей.")
+        bot.send_message(m.chat.id, STRINGS[lang]['limit_exceeded'])
         return
 
     clear_previous_interface_messages(m.chat.id)
     total_requests_count += 1
     user_total_searches[m.chat.id] = user_total_searches.get(m.chat.id, 0) + 1
     
-    status_msg = bot.send_message(m.chat.id, "🔎 Сверяю индексы базы данных...")
+    status_msg = bot.send_message(m.chat.id, STRINGS[lang]['search_status'])
     results = parse_rutracker(query_text=m.text)
     
     try: 
@@ -414,26 +540,37 @@ def handle_text(m):
     if results:
         for item in results:
             kb = types.InlineKeyboardMarkup()
-            kb.add(types.InlineKeyboardButton("📄 Открыть карточку релиза", callback_data=f"v{item['tid']}"))
-            text = f"▪️ <b>{clean_html(item['title'])}</b>\n└ 💼 Вес: <code>{clean_html(item['size'])}</code>"
+            kb.add(types.InlineKeyboardButton(STRINGS[lang]['card_btn'], callback_data=f"v{item['tid']}"))
+            
+            lbl = STRINGS[lang]['weight']
+            text = f"▪️ <b>{clean_html(item['title'])}</b>\n└ 💼 {lbl}: <code>{clean_html(item['size'])}</code>"
             try:
                 msg = bot.send_message(m.chat.id, text, reply_markup=kb, parse_mode="HTML")
                 register_msg_for_deletion(m.chat.id, msg.message_id)
             except Exception: 
                 pass
     else:
-        bot.send_message(m.chat.id, "❌ По данному запросу ничего не найдено.", reply_markup=get_main_keyboard())
+        bot.send_message(m.chat.id, STRINGS[lang]['no_results'], reply_markup=get_main_keyboard(m.chat.id))
 
 # ==========================================
-# ОБРАБОТКА CALLBACK НАЖАТИЙ (INLINE КНОПКИ)
+# СИСТЕМА ОБРАБОТКИ CALLBACK ДЕЙСТВИЙ
 # ==========================================
 @bot.callback_query_handler(func=lambda c: True)
 def callbacks(c):
     global user_total_searches, premium_users, premium_dates
     cid = c.message.chat.id
     bot.answer_callback_query(c.id)
+    lang = user_lang.get(cid, 'ru')
     
-    if c.data.startswith('c'):
+    # Смена языка интерфеса
+    if c.data == "set_lang_ru":
+        user_lang[cid] = 'ru'
+        bot.send_message(cid, STRINGS['ru']['lang_changed'], reply_markup=get_main_keyboard(cid))
+    elif c.data == "set_lang_en":
+        user_lang[cid] = 'en'
+        bot.send_message(cid, STRINGS['en']['lang_changed'], reply_markup=get_main_keyboard(cid))
+        
+    elif c.data.startswith('c'):
         if not check_and_increment_limit(c.from_user, cid): 
             return
         clear_previous_interface_messages(cid)
@@ -442,8 +579,10 @@ def callbacks(c):
             user_total_searches[cid] = user_total_searches.get(cid, 0) + 1
             for item in results:
                 kb = types.InlineKeyboardMarkup()
-                kb.add(types.InlineKeyboardButton("📄 Открыть карточку релиза", callback_data=f"v{item['tid']}"))
-                text = f"▪️ <b>{clean_html(item['title'])}</b>\n└ 💼 Вес: <code>{clean_html(item['size'])}</code>"
+                kb.add(types.InlineKeyboardButton(STRINGS[lang]['card_btn'], callback_data=f"v{item['tid']}"))
+                
+                lbl = STRINGS[lang]['weight']
+                text = f"▪️ <b>{clean_html(item['title'])}</b>\n└ 💼 {lbl}: <code>{clean_html(item['size'])}</code>"
                 try:
                     msg = bot.send_message(cid, text, reply_markup=kb, parse_mode="HTML")
                     register_msg_for_deletion(cid, msg.message_id)
@@ -456,10 +595,10 @@ def callbacks(c):
             r = r_session.get(f"{BASE_URL}/forum/dl.php?t={tid}", headers={'Referer': f"{BASE_URL}/forum/viewtopic.php?t={tid}"}, timeout=20)
             f = io.BytesIO(r.content)
             f.name = f"{tid}.torrent"
-            bot.send_document(cid, f, caption="✅ Торрент-файл успешно сгенерирован.")
+            bot.send_document(cid, f, caption=STRINGS[lang]['torrent_success'])
             clear_previous_interface_messages(cid)
         except Exception: 
-            bot.send_message(cid, "❌ Не удалось скачать файл с трекера.")
+            bot.send_message(cid, STRINGS[lang]['torrent_fail'])
     
     elif c.data.startswith('v'):
         if not check_and_increment_limit(c.from_user, cid): 
@@ -467,7 +606,7 @@ def callbacks(c):
         tid = c.data[1:]
         clear_previous_interface_messages(cid)
 
-        wait_msg = bot.send_message(cid, "⏳ <i>Формирую карточку релиза и опрашиваю Gemini ИИ...</i>", parse_mode="HTML")
+        wait_msg = bot.send_message(cid, STRINGS[lang]['card_loading'], parse_mode="HTML")
         img_url, description, comments = parse_topic_details(tid)
         summary = get_ai_summary(comments)
         
@@ -477,16 +616,16 @@ def callbacks(c):
             pass
         
         kb = types.InlineKeyboardMarkup(row_width=2)
-        kb.add(types.InlineKeyboardButton("📥 Скачать .torrent", callback_data=f"d{tid}"))
-        kb.add(types.InlineKeyboardButton("👥 Рефка", callback_data="inline_ref"))
-        kb.add(types.InlineKeyboardButton("⭐️ Подписка", callback_data="inline_sub"))
+        kb.add(types.InlineKeyboardButton(STRINGS[lang]['download_btn'], callback_data=f"d{tid}"))
+        kb.add(types.InlineKeyboardButton(STRINGS[lang]['ref_btn'], callback_data="inline_ref"))
+        kb.add(types.InlineKeyboardButton(STRINGS[lang]['sub_btn'], callback_data="inline_sub"))
         
         if c.message.text:
             title_text = clean_html(c.message.text.split('\n')[0].replace('▪️ ', ''))
         else:
-            title_text = "Карточка релиза"
+            title_text = "Release Card" if lang == 'en' else "Карточка релиза"
             
-        card_text = f"📦 <b>{title_text}</b>\n\n📋 <b>Детали сборки:</b>\n{description}\n\n🤖 <b>Вердикт ИИ по отзывам:</b>\n<blockquote>{clean_html(summary)}</blockquote>"
+        card_text = f"📦 <b>{title_text}</b>\n\n{STRINGS[lang]['details_title']}\n{description}\n\n{STRINGS[lang]['verdict_title']}\n<blockquote>{clean_html(summary)}</blockquote>"
         
         try:
             if img_url and (img_url.startswith('http://') or img_url.startswith('https://')):
@@ -502,12 +641,13 @@ def callbacks(c):
     elif c.data in ['buy_premium', 'inline_sub']:
         if cid in premium_users: 
             return
-        prices = [types.LabeledPrice(label='Премиум (1 месяц)', amount=25)]
+        prices = [types.LabeledPrice(label='Premium (1 month)', amount=25)]
         try:
+            desc = "Premium access and Gemini AI reviews analysis" if lang == 'en' else "Снятие лимитов и активация ИИ-анализа комментариев."
             bot.send_invoice(
                 chat_id=cid, 
-                title="⭐ Безлимитный Premium",
-                description="Снятие лимитов и активация ИИ-анализа комментариев.",
+                title="⭐ Premium Access",
+                description=desc,
                 invoice_payload="monthly_premium_stars", 
                 provider_token="", 
                 currency="XTR", 
@@ -515,17 +655,18 @@ def callbacks(c):
                 start_parameter="premium-sub"
             )
         except Exception as e: 
-            bot.send_message(cid, f"❌ Ошибка вызова инвойса: {e}")
+            bot.send_message(cid, f"❌ Invoice Error: {e}")
         
     elif c.data == 'inline_ref':
         bot_info = bot.get_me()
-        bot.send_message(cid, f"🔗 <b>Реферальная ссылка:</b>\n<code>https://t.me/{bot_info.username}?start=ref{cid}</code>", parse_mode="HTML")
+        ref_link = f"https://t.me/{bot_info.username}?start=ref{cid}"
+        bot.send_message(cid, f"{STRINGS[lang]['ref_link_msg']}<code>{ref_link}</code>", parse_mode="HTML")
 
     elif c.data == "test_drop_my_sub":
         if cid in premium_users: 
             premium_users.remove(cid)
         user_usage[cid] = 0 
-        bot.send_message(cid, "🗑 Подписка сброшена.")
+        bot.send_message(cid, "🗑 Sub dropped." if lang == 'en' else "🗑 Подписка сброшена.")
         show_premium(c.message)
 
 # ==========================================
@@ -541,12 +682,14 @@ def payment_success(m):
     if m.successful_payment.invoice_payload == "monthly_premium_stars":
         premium_users.add(m.chat.id)
         premium_dates[m.chat.id] = datetime.datetime.now()
-        bot.send_message(m.chat.id, "🎉 Premium успешно подключен!", reply_markup=get_main_keyboard(), parse_mode="HTML")
+        lang = user_lang.get(m.chat.id, 'ru')
+        ok_msg = "🎉 Premium successfully activated!" if lang == 'en' else "🎉 Premium успешно подключен!"
+        bot.send_message(m.chat.id, ok_msg, reply_markup=get_main_keyboard(m.chat.id), parse_mode="HTML")
 
 # ==========================================
 # ТОЧКА ВХОДА В ПРИЛОЖЕНИЕ
 # ==========================================
 if __name__ == '__main__':
     if login():
-        print("🚀 Бот полностью запущен. Поток обработки активен.")
+        print("🚀 Бот полностью запущен. Мультиязычность и система авто-релогина активны.")
         bot.polling(none_stop=True)
