@@ -23,7 +23,7 @@ RUTRACKER_LOGIN = os.environ.get("RUTRACKER_LOGIN", "YOUR_RUTRACKER_LOGIN")
 RUTRACKER_PASSWORD = os.environ.get("RUTRACKER_PASSWORD", "YOUR_RUTRACKER_PASSWORD")
 
 # Модераторы/Администраторы бота
-MODERATORS = [1662438615]  # Твой Telegram ID успешно добавлен!
+MODERATORS = [123456789]  # ЗАМЕНИ НА СВОЙ ТЕЛЕГРАМ ID!
 
 # Настройки Rutracker
 RUTRACKER_URL = "https://rutracker.org/forum/tracker.php"
